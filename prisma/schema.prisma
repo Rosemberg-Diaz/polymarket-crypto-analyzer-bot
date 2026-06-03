@@ -1,0 +1,58 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model CryptoMarket {
+  id             String           @id @default(cuid())
+  polymarketId   String?          @unique
+  title          String
+  asset          String
+  marketType     String
+  category       String           @default("CRYPTO")
+  liquidityUsd   Float            @default(0)
+  spread         Float            @default(0)
+  yesPrice       Float?
+  noPrice        Float?
+  closesAt       DateTime?
+  resolvedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  simulations    SimulationTrade[]
+  signals        Signal[]
+}
+
+model Signal {
+  id          String       @id @default(cuid())
+  marketId    String
+  market      CryptoMarket @relation(fields: [marketId], references: [id])
+  strategy    String
+  confidence  Float
+  reason      String
+  createdAt   DateTime     @default(now())
+}
+
+model SimulationTrade {
+  id          String           @id @default(cuid())
+  marketId    String
+  market      CryptoMarket     @relation(fields: [marketId], references: [id])
+  side        String
+  entryPrice  Float
+  stakeUsd    Float
+  status      String           @default("OPEN")
+  pnlUsd      Float?
+  openedAt    DateTime         @default(now())
+  closedAt    DateTime?
+}
+
+model BotRun {
+  id           String   @id @default(cuid())
+  mode         String   @default("SIMULATION_ONLY")
+  startedAt    DateTime @default(now())
+  finishedAt   DateTime?
+  notes        String?
+}

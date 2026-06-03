@@ -1,0 +1,40 @@
+{
+  "name": "polymarket-crypto-analyzer-bot",
+  "version": "0.1.0",
+  "description": "Bot local y gratuito de analisis y simulacion para mercados crypto de Polymarket.",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop polymarket-crypto-analyzer-bot",
+    "pm2:logs": "pm2 logs polymarket-crypto-analyzer-bot",
+    "report": "tsx src/modules/reports/report.ts"
+  },
+  "keywords": [
+    "polymarket",
+    "crypto",
+    "simulation",
+    "typescript",
+    "prisma",
+    "sqlite"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "pm2": "^5.4.3",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
