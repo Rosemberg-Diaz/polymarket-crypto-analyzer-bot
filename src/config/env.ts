@@ -1,9 +1,11 @@
 import dotenv from "dotenv";
 import { DEFAULT_PRIORITY_ASSETS, CryptoAsset, SUPPORTED_CRYPTO_ASSETS } from "./assets";
+import { DEFAULTS, MIN_VALUES } from "./constants";
 
 dotenv.config();
 
 export type AppMode = "SIMULATION_ONLY";
+export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export interface AppConfig {
   databaseUrl: string;
@@ -18,7 +20,7 @@ export interface AppConfig {
   prioritizeShortTermUpDown: boolean;
   backupEnabled: boolean;
   backupIntervalHours: number;
-  logLevel: string;
+  logLevel: LogLevel;
   mlEnabled: boolean;
   mlMinResolvedTrades: number;
 }
@@ -28,16 +30,30 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
     return fallback;
   }
 
-  return value.toLowerCase() === "true";
+  const normalized = value.trim().toLowerCase();
+
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["false", "0", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
-function parseNumber(value: string | undefined, fallback: number): number {
+function parseNumber(value: string | undefined, fallback: number, minimum: number): number {
   if (value === undefined) {
     return fallback;
   }
 
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(parsed, minimum);
 }
 
 function parsePriorityAssets(value: string | undefined): CryptoAsset[] {
@@ -65,25 +81,54 @@ function requireSimulationOnly(appMode: string, enableRealTrading: boolean): voi
   }
 }
 
-const rawAppMode = process.env.APP_MODE ?? "SIMULATION_ONLY";
-const rawEnableRealTrading = parseBoolean(process.env.ENABLE_REAL_TRADING, false);
+function parseLogLevel(value: string | undefined): LogLevel {
+  const normalized = value?.trim().toLowerCase();
+
+  if (normalized === "debug" || normalized === "info" || normalized === "warn" || normalized === "error") {
+    return normalized;
+  }
+
+  return DEFAULTS.logLevel;
+}
+
+const rawAppMode = process.env.APP_MODE ?? DEFAULTS.appMode;
+const rawEnableRealTrading = parseBoolean(process.env.ENABLE_REAL_TRADING, DEFAULTS.enableRealTrading);
 
 requireSimulationOnly(rawAppMode, rawEnableRealTrading);
 
 export const config: AppConfig = {
-  databaseUrl: process.env.DATABASE_URL ?? "file:./dev.db",
-  appMode: "SIMULATION_ONLY",
-  enableRealTrading: false,
-  scanIntervalSeconds: parseNumber(process.env.SCAN_INTERVAL_SECONDS, 10),
-  simulatedStakeUsd: parseNumber(process.env.SIMULATED_STAKE_USD, 5),
-  maxSpread: parseNumber(process.env.MAX_SPREAD, 0.05),
-  minLiquidity: parseNumber(process.env.MIN_LIQUIDITY, 100),
-  marketCategory: "CRYPTO",
+  databaseUrl: process.env.DATABASE_URL ?? DEFAULTS.databaseUrl,
+  appMode: DEFAULTS.appMode,
+  enableRealTrading: DEFAULTS.enableRealTrading,
+  scanIntervalSeconds: parseNumber(
+    process.env.SCAN_INTERVAL_SECONDS,
+    DEFAULTS.scanIntervalSeconds,
+    MIN_VALUES.scanIntervalSeconds
+  ),
+  simulatedStakeUsd: parseNumber(
+    process.env.SIMULATED_STAKE_USD,
+    DEFAULTS.simulatedStakeUsd,
+    MIN_VALUES.simulatedStakeUsd
+  ),
+  maxSpread: parseNumber(process.env.MAX_SPREAD, DEFAULTS.maxSpread, MIN_VALUES.maxSpread),
+  minLiquidity: parseNumber(process.env.MIN_LIQUIDITY, DEFAULTS.minLiquidity, MIN_VALUES.minLiquidity),
+  marketCategory: DEFAULTS.marketCategory,
   priorityAssets: parsePriorityAssets(process.env.PRIORITY_ASSETS),
-  prioritizeShortTermUpDown: parseBoolean(process.env.PRIORITIZE_SHORT_TERM_UP_DOWN, true),
-  backupEnabled: parseBoolean(process.env.BACKUP_ENABLED, true),
-  backupIntervalHours: parseNumber(process.env.BACKUP_INTERVAL_HOURS, 24),
-  logLevel: process.env.LOG_LEVEL ?? "info",
-  mlEnabled: parseBoolean(process.env.ML_ENABLED, false),
-  mlMinResolvedTrades: parseNumber(process.env.ML_MIN_RESOLVED_TRADES, 1000)
+  prioritizeShortTermUpDown: parseBoolean(
+    process.env.PRIORITIZE_SHORT_TERM_UP_DOWN,
+    DEFAULTS.prioritizeShortTermUpDown
+  ),
+  backupEnabled: parseBoolean(process.env.BACKUP_ENABLED, DEFAULTS.backupEnabled),
+  backupIntervalHours: parseNumber(
+    process.env.BACKUP_INTERVAL_HOURS,
+    DEFAULTS.backupIntervalHours,
+    MIN_VALUES.backupIntervalHours
+  ),
+  logLevel: parseLogLevel(process.env.LOG_LEVEL),
+  mlEnabled: parseBoolean(process.env.ML_ENABLED, DEFAULTS.mlEnabled),
+  mlMinResolvedTrades: parseNumber(
+    process.env.ML_MIN_RESOLVED_TRADES,
+    DEFAULTS.mlMinResolvedTrades,
+    MIN_VALUES.mlMinResolvedTrades
+  )
 };

@@ -1,19 +1,71 @@
 import { config } from "./config/env";
 import { connectDatabase, disconnectDatabase } from "./database/client";
-import { BackupService } from "./modules/backup/backupService";
+import { BackupService } from "./modules/backup/backup.service";
+import { CryptoMarketScannerJob } from "./modules/jobs/crypto-market-scanner.job";
+import { DailyMaintenanceJob } from "./modules/jobs/daily-maintenance.job";
 import { LearningService } from "./modules/learning/learningService";
-import { Logger } from "./modules/logger/logger";
-import { MarketDataService } from "./modules/market-data/marketDataService";
-import { PolymarketClient } from "./modules/polymarket/polymarketClient";
-import { RiskService } from "./modules/risk/riskService";
-import { ScannerJob } from "./modules/jobs/scannerJob";
-import { SignalService } from "./modules/signals/signalService";
-import { SimulationService } from "./modules/simulations/simulationService";
+import { LoggerService } from "./modules/logger/logger.service";
 
 async function bootstrap(): Promise<void> {
-  const logger = new Logger(config.logLevel);
-  const backupService = new BackupService();
+  const logger = new LoggerService(config.logLevel);
+  const backupService = new BackupService(logger);
   const learningService = new LearningService();
+  const dailyMaintenanceJob = new DailyMaintenanceJob(backupService, logger);
+  const scannerJob = new CryptoMarketScannerJob(logger);
+  let scanTimer: NodeJS.Timeout | null = null;
+  let isShuttingDown = false;
+  let isScanRunning = false;
+
+  async function shutdown(reason: string): Promise<void> {
+    if (isShuttingDown) {
+      return;
+    }
+
+    isShuttingDown = true;
+    if (scanTimer) {
+      clearTimeout(scanTimer);
+      scanTimer = null;
+    }
+
+    logger.info(`Shutting down bot: ${reason}`);
+    await disconnectDatabase();
+    logger.info("Prisma disconnected. Shutdown complete.");
+  }
+
+  async function runScanLoop(): Promise<void> {
+    if (isShuttingDown) {
+      return;
+    }
+
+    if (isScanRunning) {
+      logger.warn("Previous scan still running. Skipping this tick.");
+    } else {
+      isScanRunning = true;
+      try {
+        await scannerJob.runOnce();
+      } catch (error) {
+        logger.error("Crypto market scanner failed.", error);
+      } finally {
+        isScanRunning = false;
+      }
+    }
+
+    if (!isShuttingDown) {
+      scanTimer = setTimeout(runScanLoop, config.scanIntervalSeconds * 1000);
+    }
+  }
+
+  process.once("SIGINT", () => {
+    void shutdown("SIGINT").finally(() => {
+      process.exit(0);
+    });
+  });
+
+  process.once("SIGTERM", () => {
+    void shutdown("SIGTERM").finally(() => {
+      process.exit(0);
+    });
+  });
 
   logger.info("Starting Polymarket Crypto Analyzer Bot");
   logger.info(`Modo actual: ${config.appMode}`);
@@ -24,25 +76,13 @@ async function bootstrap(): Promise<void> {
   logger.info(`Backups: ${backupService.getStatus()}`);
   logger.info(`ML enabled: ${learningService.isEnabled()} (${learningService.getMinimumResolvedTrades()} min trades)`);
 
+  await dailyMaintenanceJob.runManual();
   await connectDatabase();
-
-  const scannerJob = new ScannerJob(
-    new MarketDataService(new PolymarketClient()),
-    new SignalService(),
-    new RiskService(),
-    new SimulationService(),
-    logger
-  );
-
-  await scannerJob.runOnce();
-  logger.info("Bot initialized in SIMULATION_ONLY mode. Waiting for future scheduler integration.");
+  await runScanLoop();
 }
 
-bootstrap()
-  .catch((error: unknown) => {
-    console.error("Bot failed to start", error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await disconnectDatabase();
-  });
+bootstrap().catch(async (error: unknown) => {
+  console.error("Bot failed to start", error);
+  await disconnectDatabase();
+  process.exitCode = 1;
+});

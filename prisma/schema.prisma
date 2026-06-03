@@ -7,52 +7,191 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model CryptoMarket {
-  id             String           @id @default(cuid())
-  polymarketId   String?          @unique
-  title          String
-  asset          String
-  marketType     String
-  category       String           @default("CRYPTO")
-  liquidityUsd   Float            @default(0)
-  spread         Float            @default(0)
-  yesPrice       Float?
-  noPrice        Float?
-  closesAt       DateTime?
-  resolvedAt     DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  simulations    SimulationTrade[]
-  signals        Signal[]
+model Market {
+  id               String            @id @default(cuid())
+  externalMarketId String?           @unique
+  slug             String?           @unique
+  question         String
+  category         String            @default("CRYPTO")
+  assetSymbol      String
+  baseAsset        String?
+  quoteAsset       String?
+  marketType       String
+  timeframe        String?
+  active           Boolean           @default(true)
+  closed           Boolean           @default(false)
+  startDate        DateTime?
+  endDate          DateTime?
+  resolutionSource String?
+  rawData          String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  outcomes         MarketOutcome[]
+  snapshots        MarketSnapshot[]
+  predictions      BotPrediction[]
+  simulatedTrades  SimulatedTrade[]
+
+  @@index([assetSymbol])
+  @@index([marketType])
+  @@index([createdAt])
 }
 
-model Signal {
-  id          String       @id @default(cuid())
-  marketId    String
-  market      CryptoMarket @relation(fields: [marketId], references: [id])
-  strategy    String
-  confidence  Float
-  reason      String
-  createdAt   DateTime     @default(now())
+model MarketOutcome {
+  id              String   @id @default(cuid())
+  marketId        String
+  market          Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  externalTokenId String?
+  name            String
+  normalizedName  String
+  currentPrice    Decimal?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([marketId])
+  @@index([externalTokenId])
+  @@index([createdAt])
 }
 
-model SimulationTrade {
-  id          String           @id @default(cuid())
-  marketId    String
-  market      CryptoMarket     @relation(fields: [marketId], references: [id])
-  side        String
-  entryPrice  Float
-  stakeUsd    Float
-  status      String           @default("OPEN")
-  pnlUsd      Float?
-  openedAt    DateTime         @default(now())
-  closedAt    DateTime?
+model MarketSnapshot {
+  id                      String          @id @default(cuid())
+  marketId                String
+  market                  Market          @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  upPrice                 Decimal?
+  downPrice               Decimal?
+  yesPrice                Decimal?
+  noPrice                 Decimal?
+  bid                     Decimal?
+  ask                     Decimal?
+  spread                  Decimal?
+  liquidity               Decimal?
+  volume                  Decimal?
+  targetPrice             Decimal?
+  currentAssetPrice       Decimal?
+  distanceToTarget        Decimal?
+  distanceToTargetPercent Decimal?
+  secondsToClose          Int?
+  momentumLast30s         Decimal?
+  momentumLast60s         Decimal?
+  momentumLast120s        Decimal?
+  volatilityLast60s       Decimal?
+  volatilityLast120s      Decimal?
+  rawOrderbook            String?
+  rawData                 String?
+  createdAt               DateTime        @default(now())
+  predictions             BotPrediction[]
+
+  @@index([marketId])
+  @@index([createdAt])
 }
 
-model BotRun {
-  id           String   @id @default(cuid())
-  mode         String   @default("SIMULATION_ONLY")
-  startedAt    DateTime @default(now())
-  finishedAt   DateTime?
-  notes        String?
+model BotPrediction {
+  id                 String           @id @default(cuid())
+  marketId           String
+  market             Market           @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  snapshotId         String
+  snapshot           MarketSnapshot   @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  strategyName       String
+  assetSymbol        String
+  marketType         String
+  predictedOutcome   String
+  entryPrice         Decimal
+  impliedProbability Decimal?
+  botProbability     Decimal?
+  edge               Decimal?
+  confidence         Decimal?
+  recommendation     String
+  reason             String?
+  features           String?
+  historicalSummary  String?
+  createdAt          DateTime         @default(now())
+  simulatedTrades    SimulatedTrade[]
+
+  @@index([marketId])
+  @@index([snapshotId])
+  @@index([assetSymbol])
+  @@index([marketType])
+  @@index([strategyName])
+  @@index([createdAt])
+}
+
+model SimulatedTrade {
+  id           String        @id @default(cuid())
+  predictionId String
+  prediction   BotPrediction @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+  marketId     String
+  market       Market        @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  stake        Decimal
+  entryPrice   Decimal
+  shares       Decimal
+  status       String        @default("PENDING")
+  result       String?
+  isWin        Boolean?
+  finalValue   Decimal?
+  profit       Decimal?
+  roi          Decimal?
+  resolvedAt   DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([predictionId])
+  @@index([marketId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([resolvedAt])
+}
+
+model LearningStat {
+  id               String   @id @default(cuid())
+  strategyName     String
+  marketType       String
+  assetSymbol      String
+  predictedOutcome String
+  totalPredictions Int      @default(0)
+  wins             Int      @default(0)
+  losses           Int      @default(0)
+  winRate          Decimal  @default(0)
+  totalProfit      Decimal  @default(0)
+  averageRoi       Decimal  @default(0)
+  maxDrawdown      Decimal  @default(0)
+  updatedAt        DateTime @updatedAt
+
+  @@unique([strategyName, marketType, assetSymbol, predictedOutcome])
+  @@index([assetSymbol])
+  @@index([marketType])
+  @@index([strategyName])
+  @@index([updatedAt])
+}
+
+model BotRunLog {
+  id        String   @id @default(cuid())
+  level     String
+  message   String
+  context   String?
+  createdAt DateTime @default(now())
+
+  @@index([level])
+  @@index([createdAt])
+}
+
+model DailyPerformance {
+  id               String   @id @default(cuid())
+  date             DateTime
+  assetSymbol      String
+  marketType       String
+  totalPredictions Int      @default(0)
+  totalTrades      Int      @default(0)
+  wins             Int      @default(0)
+  losses           Int      @default(0)
+  winRate          Decimal  @default(0)
+  totalProfit      Decimal  @default(0)
+  averageRoi       Decimal  @default(0)
+  bestStrategy     String?
+  worstStrategy    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([date, assetSymbol, marketType])
+  @@index([assetSymbol])
+  @@index([marketType])
+  @@index([createdAt])
 }
