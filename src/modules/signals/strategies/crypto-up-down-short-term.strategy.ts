@@ -128,7 +128,9 @@ export class CryptoUpDownShortTermStrategy {
         recommendation,
         predictedOutcome
       }),
-      features
+      features,
+      confidenceAdjustment: 0,
+      historicalSummary: "Esta senal no ha sido comparada todavia contra casos historicos similares."
     };
   }
 
@@ -202,7 +204,9 @@ export class CryptoUpDownShortTermStrategy {
             : null,
           0,
           0
-        )
+        ),
+      confidenceAdjustment: 0,
+      historicalSummary: "Esta senal no ha sido comparada todavia contra casos historicos similares."
     };
   }
 

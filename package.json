@@ -6,7 +6,13 @@
   "main": "dist/main.js",
   "scripts": {
     "dev": "tsx watch src/main.ts",
+    "api": "tsx watch src/modules/api/api.server.ts",
+    "web": "vite --config apps/web/vite.config.ts",
+    "dev:all": "concurrently \"npm run api\" \"npm run web\"",
     "build": "tsc",
+    "build:web": "vite build --config apps/web/vite.config.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "start": "node dist/main.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
@@ -14,7 +20,10 @@
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop polymarket-crypto-analyzer-bot",
     "pm2:logs": "pm2 logs polymarket-crypto-analyzer-bot",
-    "report": "tsx src/modules/reports/report.ts"
+    "pm2:restart": "pm2 restart polymarket-crypto-analyzer-bot",
+    "pm2:save": "pm2 save",
+    "report": "tsx src/modules/reports/report.ts",
+    "export:ml-dataset": "tsx src/modules/learning/export-ml-dataset.ts"
   },
   "keywords": [
     "polymarket",
@@ -27,14 +36,27 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/icons-material": "^9.0.1",
+    "@mui/material": "^9.0.1",
     "@prisma/client": "^5.22.0",
-    "dotenv": "^16.4.7"
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^9.2.1",
+    "dotenv": "^16.4.7",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "recharts": "^3.8.1",
+    "vite": "^8.0.16"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
     "pm2": "^5.4.3",
     "prisma": "^5.22.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.8"
   }
 }

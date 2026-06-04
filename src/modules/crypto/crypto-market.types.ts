@@ -30,7 +30,17 @@ export interface RawPolymarketLikeMarket {
   endDate?: string | Date | null;
   resolutionSource?: string | null;
   outcomes?: unknown;
+  tokens?: unknown;
+  active?: boolean;
+  closed?: boolean;
   rawData?: unknown;
+}
+
+export interface NormalizedCryptoMarketOutcome {
+  externalTokenId: string | null;
+  name: string;
+  normalizedName: NormalizedOutcomeName;
+  currentPrice: number | null;
 }
 
 export interface NormalizedCryptoMarket {
@@ -43,7 +53,15 @@ export interface NormalizedCryptoMarket {
   quoteAsset: string | null;
   marketType: CryptoMarketType;
   timeframe: CryptoTimeframe;
+  active: boolean;
+  closed: boolean;
+  endDate: Date | null;
   resolutionSource: string | null;
   targetPrice: number | null;
+  outcomes: NormalizedCryptoMarketOutcome[];
+  tokenIds: string[];
+  isOperable: boolean;
+  nonOperableReason: string | null;
+  priorityScore: number;
   rawData: string;
 }

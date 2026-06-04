@@ -1,8 +1,10 @@
 import { config } from "./config/env";
 import { connectDatabase, disconnectDatabase } from "./database/client";
 import { BackupService } from "./modules/backup/backup.service";
+import { HealthCheckService } from "./modules/health/health-check.service";
 import { CryptoMarketScannerJob } from "./modules/jobs/crypto-market-scanner.job";
 import { DailyMaintenanceJob } from "./modules/jobs/daily-maintenance.job";
+import { ResolveSimulatedTradesJob } from "./modules/jobs/resolve-simulated-trades.job";
 import { LearningService } from "./modules/learning/learningService";
 import { LoggerService } from "./modules/logger/logger.service";
 
@@ -12,9 +14,13 @@ async function bootstrap(): Promise<void> {
   const learningService = new LearningService();
   const dailyMaintenanceJob = new DailyMaintenanceJob(backupService, logger);
   const scannerJob = new CryptoMarketScannerJob(logger);
+  const resolveSimulatedTradesJob = new ResolveSimulatedTradesJob(logger);
+  const healthCheckService = new HealthCheckService();
   let scanTimer: NodeJS.Timeout | null = null;
+  let maintenanceTimer: NodeJS.Timeout | null = null;
   let isShuttingDown = false;
   let isScanRunning = false;
+  let isMaintenanceRunning = false;
 
   async function shutdown(reason: string): Promise<void> {
     if (isShuttingDown) {
@@ -27,9 +33,18 @@ async function bootstrap(): Promise<void> {
       scanTimer = null;
     }
 
-    logger.info(`Shutting down bot: ${reason}`);
-    await disconnectDatabase();
-    logger.info("Prisma disconnected. Shutdown complete.");
+    if (maintenanceTimer) {
+      clearTimeout(maintenanceTimer);
+      maintenanceTimer = null;
+    }
+
+    try {
+      logger.info(`Shutting down bot: ${reason}`);
+      await disconnectDatabase();
+      logger.info("Prisma disconnected. Shutdown complete.");
+    } catch (error) {
+      logger.error("Error during shutdown.", error);
+    }
   }
 
   async function runScanLoop(): Promise<void> {
@@ -43,6 +58,9 @@ async function bootstrap(): Promise<void> {
       isScanRunning = true;
       try {
         await scannerJob.runOnce();
+        await resolveSimulatedTradesJob.runOnce();
+        const health = await healthCheckService.getStatus();
+        logger.info("Health check", health);
       } catch (error) {
         logger.error("Crypto market scanner failed.", error);
       } finally {
@@ -52,6 +70,29 @@ async function bootstrap(): Promise<void> {
 
     if (!isShuttingDown) {
       scanTimer = setTimeout(runScanLoop, config.scanIntervalSeconds * 1000);
+    }
+  }
+
+  async function runMaintenanceLoop(): Promise<void> {
+    if (isShuttingDown) {
+      return;
+    }
+
+    if (isMaintenanceRunning) {
+      logger.warn("Previous maintenance job still running. Skipping this tick.");
+    } else {
+      isMaintenanceRunning = true;
+      try {
+        await dailyMaintenanceJob.runManual();
+      } catch (error) {
+        logger.error("Daily maintenance loop failed.", error);
+      } finally {
+        isMaintenanceRunning = false;
+      }
+    }
+
+    if (!isShuttingDown) {
+      maintenanceTimer = setTimeout(runMaintenanceLoop, config.backupIntervalHours * 60 * 60 * 1000);
     }
   }
 
@@ -74,10 +115,12 @@ async function bootstrap(): Promise<void> {
   logger.info(`Activos prioritarios: ${config.priorityAssets.join(", ")}`);
   logger.info(`Trading real desactivado: ${String(!config.enableRealTrading)}`);
   logger.info(`Backups: ${backupService.getStatus()}`);
-  logger.info(`ML enabled: ${learningService.isEnabled()} (${learningService.getMinimumResolvedTrades()} min trades)`);
+  logger.info(`ML enabled: ${String(config.mlEnabled)}`);
+  logger.info(`Statistical learning minimum similar cases: ${learningService.getMinimumResolvedTrades()}`);
 
-  await dailyMaintenanceJob.runManual();
   await connectDatabase();
+  await dailyMaintenanceJob.runManual();
+  maintenanceTimer = setTimeout(runMaintenanceLoop, config.backupIntervalHours * 60 * 60 * 1000);
   await runScanLoop();
 }
 

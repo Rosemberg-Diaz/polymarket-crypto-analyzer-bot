@@ -22,6 +22,7 @@ const assetAliases: Record<Exclude<CryptoAsset, "OTHER">, string[]> = {
 const cryptoKeywords = [
   "CRYPTO",
   "CRYPTOCURRENCY",
+  "BLOCKCHAIN",
   "BITCOIN",
   "ETHEREUM",
   "SOLANA",
@@ -29,6 +30,20 @@ const cryptoKeywords = [
   "DOGECOIN",
   "AVALANCHE",
   "BINANCE",
+  "OPENSEA",
+  "HYPERLIQUID",
+  "MEGAETH",
+  "KRAKEN",
+  "AIR DROP",
+  "AIRDROP",
+  "TOKEN",
+  "TOKENOMICS",
+  "FDV",
+  "DEFI",
+  "NFT",
+  "STABLECOIN",
+  "USDC",
+  "USDT",
   "BTC",
   "ETH",
   "SOL",
@@ -36,6 +51,30 @@ const cryptoKeywords = [
   "DOGE",
   "AVAX",
   "BNB"
+];
+
+const excludedNonCryptoKeywords = [
+  "NFL",
+  "NBA",
+  "MLB",
+  "NHL",
+  "SOCCER",
+  "FOOTBALL",
+  "TENNIS",
+  "UFC",
+  "ELECTION",
+  "PRESIDENT",
+  "SENATE",
+  "CONGRESS",
+  "DEMOCRAT",
+  "REPUBLICAN",
+  "TRUMP",
+  "BIDEN",
+  "POLITICS",
+  "WORLD CUP",
+  "FIFA",
+  "STANLEY CUP",
+  "FINALS"
 ];
 
 export function inferAssetSymbol(
@@ -104,7 +143,7 @@ export function inferTimeframe(
     return "1h";
   }
 
-  if (/\b(1\s?D|1\s?DAY|ONE\s?DAY|DAILY|TODAY|24\s?H|24\s?HOUR)\b/.test(text)) {
+  if (/\b(1\s?D|1\s?DAY|ONE\s?DAY|DAILY|TODAY|24\s?H|24\s?HOUR|ONE\s?DAY\s?AFTER|1\s?DAY\s?AFTER)\b/.test(text)) {
     return "1d";
   }
 
@@ -120,7 +159,23 @@ export function isCryptoMarket(
   const tagText = tags?.join(" ") ?? "";
   const text = normalizeSearchText(question, slug, description, tagText);
 
+  if (excludedNonCryptoKeywords.some((keyword) => containsToken(text, keyword))) {
+    return false;
+  }
+
   return cryptoKeywords.some((keyword) => containsToken(text, keyword));
+}
+
+export function looksLikeExcludedNonCryptoMarket(
+  question?: string | null,
+  slug?: string | null,
+  description?: string | null,
+  tags?: string[] | null
+): boolean {
+  const tagText = tags?.join(" ") ?? "";
+  const text = normalizeSearchText(question, slug, description, tagText);
+
+  return excludedNonCryptoKeywords.some((keyword) => containsToken(text, keyword));
 }
 
 export function extractTargetPrice(
@@ -216,13 +271,14 @@ function parsePrice(value: string | undefined, suffix: string | undefined): numb
   return parsed * multiplier;
 }
 
-function safeStringify(value: unknown): string {
+function safeStringify(value: unknown, maxLength = 20_000): string {
   if (value === undefined || value === null) {
     return "";
   }
 
   try {
-    return JSON.stringify(value);
+    const serialized = JSON.stringify(value);
+    return serialized.length <= maxLength ? serialized : serialized.slice(0, maxLength);
   } catch {
     return "";
   }

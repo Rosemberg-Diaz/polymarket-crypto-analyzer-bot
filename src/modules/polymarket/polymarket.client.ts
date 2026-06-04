@@ -251,6 +251,7 @@ function normalizeMarket(raw: Record<string, unknown>, includeRaw = true): Polym
     title: asString(raw.title),
     description: asString(raw.description),
     category: asString(raw.category),
+    tags: normalizeTags(raw.tags),
     active: asBoolean(raw.active),
     closed: asBoolean(raw.closed),
     archived: asBoolean(raw.archived),
@@ -261,6 +262,41 @@ function normalizeMarket(raw: Record<string, unknown>, includeRaw = true): Polym
     tokens: normalizeTokens(raw.tokens ?? raw.clobTokenIds ?? raw.clob_token_ids),
     raw: includeRaw ? raw : undefined
   };
+}
+
+function normalizeTags(raw: unknown): string[] | undefined {
+  const parsed = parseMaybeJson(raw);
+
+  if (!Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  const tags = parsed.flatMap((tag) => {
+    if (typeof tag === "string") {
+      return [tag];
+    }
+
+    if (isRecord(tag)) {
+      const label = tag.label ?? tag.name ?? tag.slug;
+      return typeof label === "string" ? [label] : [];
+    }
+
+    return [];
+  });
+
+  return tags.length > 0 ? tags : undefined;
+}
+
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }
 
 function normalizeTokens(raw: unknown): PolymarketMarket["tokens"] {

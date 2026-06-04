@@ -55,4 +55,6 @@ export interface SignalResult {
   confidence: Confidence;
   reason: string;
   features: SignalFeatures | Record<string, unknown>;
+  confidenceAdjustment: number;
+  historicalSummary: string;
 }

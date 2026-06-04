@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { DIRECTORIES } from "../../config/constants";
 import { LogLevel } from "../../config/env";
+import { prisma } from "../../database/client";
 
 const levels: Record<LogLevel, number> = {
   debug: 0,
@@ -53,6 +54,7 @@ export class LoggerService {
     }
 
     void this.writeToDailyFile(timestamp, line);
+    void this.writeToDatabase(level, message, context);
   }
 
   private formatLine(timestamp: Date, level: LogLevel, message: string, context?: LogContext): string {
@@ -67,6 +69,24 @@ export class LoggerService {
       await fs.appendFile(path.join(DIRECTORIES.logs, fileName), `${line}\n`, "utf8");
     } catch {
       // Logging must never stop the bot.
+    }
+  }
+
+  private async writeToDatabase(level: LogLevel, message: string, context?: LogContext): Promise<void> {
+    if (level !== "warn" && level !== "error") {
+      return;
+    }
+
+    try {
+      await prisma.botRunLog.create({
+        data: {
+          level,
+          message,
+          context: context === undefined ? null : this.safeStringify(context)
+        }
+      });
+    } catch {
+      // Database logging must never stop the bot.
     }
   }
 

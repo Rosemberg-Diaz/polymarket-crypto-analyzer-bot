@@ -1,5 +1,6 @@
 node_modules/
 dist/
+apps/web/dist/
 .env
 
 prisma/dev.db

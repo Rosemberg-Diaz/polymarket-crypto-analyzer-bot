@@ -27,6 +27,7 @@ export interface PolymarketMarket {
   title?: string;
   description?: string;
   category?: string;
+  tags?: string[];
   active?: boolean;
   closed?: boolean;
   archived?: boolean;
@@ -36,6 +37,13 @@ export interface PolymarketMarket {
   outcomes?: unknown;
   tokens?: PolymarketToken[];
   raw?: unknown;
+}
+
+export interface PolymarketCryptoMarketSyncResult {
+  fetchedMarkets: number;
+  cryptoMarkets: number;
+  savedMarkets: number;
+  operableMarkets: number;
 }
 
 export interface PolymarketToken {

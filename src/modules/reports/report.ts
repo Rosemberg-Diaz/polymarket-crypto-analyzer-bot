@@ -1,7 +1,23 @@
-import { config } from "../../config/env";
+import { connectDatabase, disconnectDatabase } from "../../database/client";
+import { DailyReportService } from "./daily-report.service";
+import { PerformanceReportService } from "./performance-report.service";
 
-console.log("Polymarket Crypto Analyzer Bot - Simulation Report");
-console.log(`Mode: ${config.appMode}`);
-console.log(`Real trading enabled: ${config.enableRealTrading}`);
-console.log(`Priority assets: ${config.priorityAssets.join(", ")}`);
-console.log("No real-money trading, wallet, private key, sports, politics, or elections are included.");
+async function main(): Promise<void> {
+  await connectDatabase();
+
+  const dailyReport = await new DailyReportService().generate();
+  const performanceReport = await new PerformanceReportService().generate();
+
+  console.log(dailyReport);
+  console.log("");
+  console.log(performanceReport);
+}
+
+main()
+  .catch((error: unknown) => {
+    console.error("Failed to generate report.", error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await disconnectDatabase();
+  });

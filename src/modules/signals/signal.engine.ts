@@ -4,26 +4,33 @@ import {
   SUPPORTED_CRYPTO_ASSETS,
   SUPPORTED_CRYPTO_MARKET_TYPES
 } from "../../config/assets";
+import { LearningService } from "../learning/learning.service";
 import { CryptoUpDownShortTermStrategy } from "./strategies/crypto-up-down-short-term.strategy";
-import { SignalInput, SignalResult } from "./signal.types";
+import { Confidence, Recommendation, SignalInput, SignalResult } from "./signal.types";
 
 export class SignalEngine {
   private readonly upDownShortTermStrategy = new CryptoUpDownShortTermStrategy();
 
-  generateSignal(input: SignalInput): SignalResult {
+  constructor(private readonly learningService = new LearningService()) {}
+
+  async generateSignal(input: SignalInput): Promise<SignalResult> {
     const cryptoValidation = this.validateCryptoInput(input);
     if (!cryptoValidation.isValid) {
       return createAvoidSignal("signal-engine-validation", cryptoValidation.reason);
     }
 
+    let baseSignal: SignalResult;
+
     if (input.marketType === "UP_DOWN_SHORT_TERM") {
-      return this.upDownShortTermStrategy.evaluate(input);
+      baseSignal = this.upDownShortTermStrategy.evaluate(input);
+    } else {
+      baseSignal = createAvoidSignal(
+        "signal-engine-router",
+        `Market type ${input.marketType} is crypto but has no deterministic strategy enabled yet.`
+      );
     }
 
-    return createAvoidSignal(
-      "signal-engine-router",
-      `Market type ${input.marketType} is crypto but has no deterministic strategy enabled yet.`
-    );
+    return this.applyLearning(input, baseSignal);
   }
 
   private validateCryptoInput(input: SignalInput): { isValid: true } | { isValid: false; reason: string } {
@@ -46,6 +53,59 @@ export class SignalEngine {
     }
 
     return { isValid: true };
+  }
+
+  private async applyLearning(input: SignalInput, signal: SignalResult): Promise<SignalResult> {
+    const performance = await this.learningService.findSimilarHistoricalPerformance({
+      strategyName: signal.strategyName,
+      marketType: input.marketType,
+      assetSymbol: input.assetSymbol,
+      predictedOutcome: signal.predictedOutcome,
+      entryPrice: signal.entryPrice,
+      secondsToClose: input.secondsToClose,
+      distanceToTarget:
+        input.currentAssetPrice !== null && input.targetPrice !== null
+          ? input.currentAssetPrice - input.targetPrice
+          : null,
+      spread: input.spread,
+      liquidity: input.liquidity,
+      timeframe: input.timeframe
+    });
+
+    if (performance.confidenceAdjustment === 0) {
+      return {
+        ...signal,
+        historicalSummary: performance.historicalSummary,
+        confidenceAdjustment: 0,
+        features: {
+          ...signal.features,
+          similarCases: performance.totalSimilarCases,
+          historicalWinRate: performance.winRate,
+          historicalProfit: performance.totalProfit
+        }
+      };
+    }
+
+    const adjustedBotProbability = clamp(signal.botProbability + performance.confidenceAdjustment, 0.01, 0.99);
+    const adjustedEdge = adjustedBotProbability - signal.impliedProbability;
+
+    return {
+      ...signal,
+      botProbability: round6(adjustedBotProbability),
+      edge: round6(adjustedEdge),
+      recommendation: adjustRecommendation(signal.recommendation, performance.confidenceAdjustment, adjustedEdge),
+      confidence: adjustConfidence(signal.confidence, performance.confidenceAdjustment),
+      reason: `${signal.reason} ${performance.historicalSummary}`,
+      historicalSummary: performance.historicalSummary,
+      confidenceAdjustment: performance.confidenceAdjustment,
+      features: {
+        ...signal.features,
+        similarCases: performance.totalSimilarCases,
+        historicalWinRate: performance.winRate,
+        historicalProfit: performance.totalProfit,
+        confidenceAdjustment: performance.confidenceAdjustment
+      }
+    };
   }
 }
 
@@ -71,6 +131,59 @@ function createAvoidSignal(strategyName: string, reason: string): SignalResult {
       momentumScore: 0,
       volatilityPenalty: 0,
       dataCompleteness: 0
-    }
+    },
+    confidenceAdjustment: 0,
+    historicalSummary: "Esta senal no ha sido comparada todavia contra casos historicos similares."
   };
+}
+
+function adjustRecommendation(
+  current: Recommendation,
+  adjustment: number,
+  adjustedEdge: number
+): Recommendation {
+  if (current === "AVOID") {
+    return "AVOID";
+  }
+
+  if (adjustment > 0 && current === "WAIT" && adjustedEdge >= 0.03) {
+    return "ENTER_SMALL";
+  }
+
+  if (adjustment < 0 && current === "ENTER_MODERATE") {
+    return "ENTER_SMALL";
+  }
+
+  if (adjustment < 0 && current === "ENTER_SMALL") {
+    return adjustedEdge > 0 ? "WAIT" : "AVOID";
+  }
+
+  if (adjustment < 0 && current === "WAIT" && adjustedEdge <= 0) {
+    return "AVOID";
+  }
+
+  return current;
+}
+
+function adjustConfidence(current: Confidence, adjustment: number): Confidence {
+  const levels: Confidence[] = ["LOW", "MODERATE", "HIGH"];
+  const currentIndex = levels.indexOf(current);
+
+  if (adjustment > 0) {
+    return levels[Math.min(levels.length - 1, currentIndex + 1)];
+  }
+
+  if (adjustment < 0) {
+    return levels[Math.max(0, currentIndex - 1)];
+  }
+
+  return current;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function round6(value: number): number {
+  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
