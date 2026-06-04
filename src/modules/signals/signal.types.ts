@@ -15,6 +15,8 @@ export interface SignalInput {
   assetSymbol: CryptoAsset | string;
   timeframe: CryptoTimeframe | string;
   targetPrice: number | null;
+  targetPriceSource?: string | null;
+  targetPriceTrustedForLearning?: boolean | null;
   currentAssetPrice: number | null;
   upPrice: number | null;
   downPrice: number | null;

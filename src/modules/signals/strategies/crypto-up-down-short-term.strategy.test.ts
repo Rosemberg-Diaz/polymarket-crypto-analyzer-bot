@@ -13,6 +13,8 @@ function makeInput(overrides: Partial<SignalInput> = {}): SignalInput {
     assetSymbol: "BTC",
     timeframe: "5m",
     targetPrice: 100,
+    targetPriceSource: "POLYMARKET_RTDS_CHAINLINK",
+    targetPriceTrustedForLearning: true,
     currentAssetPrice: 101,
     upPrice: 0.55,
     downPrice: 0.45,
@@ -108,5 +110,49 @@ describe("CryptoUpDownShortTermStrategy", () => {
     expect(result.recommendation).toBe("ENTER_SMALL");
     expect(result.features.entryRule).toBe("ENTER_SMALL_LIGHT");
     expect(result.reason).toContain("Regla de entrada: ENTER_SMALL_LIGHT");
+  });
+
+  it("does not use light entries when target is not official", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        currentAssetPrice: 100.22,
+        targetPrice: 100,
+        targetPriceSource: "LOCAL_SPOT_APPROXIMATION",
+        targetPriceTrustedForLearning: false,
+        upPrice: 0.55,
+        downPrice: 0.44,
+        spread: 0.02,
+        secondsToClose: 90,
+        momentumLast30s: null,
+        momentumLast60s: null,
+        momentumLast120s: null,
+        volatilityLast60s: null,
+        volatilityLast120s: null
+      })
+    );
+
+    expect(result.recommendation).toBe("WAIT");
+    expect(result.features.entryRule).toBe("NONE");
+  });
+
+  it("allows light entries with lower edge and entry price up to 0.82", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        currentAssetPrice: 100.13,
+        targetPrice: 100,
+        upPrice: 0.81,
+        downPrice: 0.18,
+        spread: 0.035,
+        secondsToClose: 35,
+        momentumLast30s: null,
+        momentumLast60s: null,
+        momentumLast120s: null,
+        volatilityLast60s: null,
+        volatilityLast120s: null
+      })
+    );
+
+    expect(result.recommendation).toBe("ENTER_SMALL");
+    expect(result.features.entryRule).toBe("ENTER_SMALL_LIGHT");
   });
 });

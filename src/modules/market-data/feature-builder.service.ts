@@ -16,6 +16,8 @@ export interface BotPredictionFeatures {
   yesPrice: number | null;
   noPrice: number | null;
   targetPrice: number | null;
+  targetPriceSource: string | null;
+  targetPriceTrustedForLearning: boolean;
   currentAssetPrice: number | null;
   distanceToTarget: number | null;
   distanceToTargetPercent: number | null;
@@ -34,6 +36,7 @@ export interface BotPredictionFeatures {
   botProbability: number | null;
   impliedProbability: number | null;
   edge: number | null;
+  entryRule: string | null;
 }
 
 export class FeatureBuilderService {
@@ -58,6 +61,8 @@ export class FeatureBuilderService {
       yesPrice: normalizeNumber(input.signalInput.yesPrice),
       noPrice: normalizeNumber(input.signalInput.noPrice),
       targetPrice: normalizeNumber(input.signalInput.targetPrice),
+      targetPriceSource: input.signalInput.targetPriceSource ?? null,
+      targetPriceTrustedForLearning: input.signalInput.targetPriceTrustedForLearning === true,
       currentAssetPrice: normalizeNumber(input.signalInput.currentAssetPrice),
       distanceToTarget: normalizeNumber(distanceToTarget),
       distanceToTargetPercent: normalizeNumber(distanceToTargetPercent),
@@ -75,13 +80,20 @@ export class FeatureBuilderService {
       confidence: input.signal.confidence,
       botProbability: normalizeNumber(input.signal.botProbability),
       impliedProbability: normalizeNumber(input.signal.impliedProbability),
-      edge: normalizeNumber(input.signal.edge)
+      edge: normalizeNumber(input.signal.edge),
+      entryRule: getStringFeature(input.signal.features, "entryRule")
     };
   }
 
   buildPredictionFeaturesJson(input: FeatureBuilderInput): string {
     return JSON.stringify(this.buildPredictionFeatures(input));
   }
+}
+
+function getStringFeature(features: SignalResult["features"], key: string): string | null {
+  const record = features as Record<string, unknown>;
+  const value = record[key];
+  return typeof value === "string" ? value : null;
 }
 
 function normalizeNumber(value: number | null): number | null {

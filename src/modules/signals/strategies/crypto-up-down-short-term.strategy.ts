@@ -23,6 +23,8 @@ interface StrategyFeatures extends Record<string, unknown> {
   volatilityPenalty: number;
   strongDistance: boolean;
   highEntryPrice: boolean;
+  targetPriceSource: string | null;
+  targetPriceTrustedForLearning: boolean;
   entryRule: "NONE" | "ENTER_SMALL_STANDARD" | "ENTER_SMALL_LIGHT" | "ENTER_MODERATE_STANDARD";
 }
 
@@ -80,11 +82,11 @@ export class CryptoUpDownShortTermStrategy {
     const momentumScore = calculateMomentumScore(input, predictedOutcome);
     const volatilityPenalty = calculateVolatilityPenalty(input);
     const strongDistance = absDistancePercent >= 0.004;
-    const highEntryPrice = entryPrice > 0.8;
+    const highEntryPrice = entryPrice > 0.82;
 
-    if (highEntryPrice && !(secondsToClose < 45 && strongDistance)) {
+    if (entryPrice > 0.82 && !(secondsToClose < 45 && strongDistance)) {
       return this.avoid(
-        "Precio de entrada mayor a 0.80 sin suficiente ventaja por tiempo/distancia",
+        "Precio de entrada mayor a 0.82 sin suficiente ventaja por tiempo/distancia",
         input,
         this.buildFeatures(input, distanceToTarget, absDistance, distancePercent, momentumScore, volatilityPenalty)
       );
@@ -108,7 +110,8 @@ export class CryptoUpDownShortTermStrategy {
       entryPrice,
       spread: input.spread,
       distancePercent,
-      predictedOutcome
+      predictedOutcome,
+      targetPriceTrustedForLearning: input.targetPriceTrustedForLearning === true
     });
     const recommendation = recommendationDecision.recommendation;
     const confidence = decideConfidence(edge, absDistancePercent, secondsToClose, input);
@@ -176,7 +179,7 @@ export class CryptoUpDownShortTermStrategy {
     probability += clamp(params.momentumScore, -0.06, 0.06);
     probability -= params.volatilityPenalty;
 
-    if (params.entryPrice > 0.8 && !(params.secondsToClose < 45 && favorableDistance >= 0.004)) {
+    if (params.entryPrice > 0.82 && !(params.secondsToClose < 45 && favorableDistance >= 0.004)) {
       probability -= 0.08;
     }
 
@@ -252,7 +255,9 @@ export class CryptoUpDownShortTermStrategy {
       momentumScore: round6(momentumScore),
       volatilityPenalty: round6(volatilityPenalty),
       strongDistance: distancePercent !== null && Math.abs(distancePercent) >= 0.004,
-      highEntryPrice: Boolean((input.upPrice !== null && input.upPrice > 0.8) || (input.downPrice !== null && input.downPrice > 0.8)),
+      highEntryPrice: Boolean((input.upPrice !== null && input.upPrice > 0.82) || (input.downPrice !== null && input.downPrice > 0.82)),
+      targetPriceSource: input.targetPriceSource ?? null,
+      targetPriceTrustedForLearning: input.targetPriceTrustedForLearning === true,
       entryRule
     };
   }
@@ -329,9 +334,17 @@ function decideRecommendation(params: {
   spread: number | null;
   distancePercent: number;
   predictedOutcome: PredictedOutcome;
+  targetPriceTrustedForLearning: boolean;
 }): RecommendationDecision {
-  if (params.highEntryPrice && !(params.secondsToClose < 45 && params.strongDistance)) {
+  if (params.entryPrice > 0.82 && !(params.secondsToClose < 45 && params.strongDistance)) {
     return { recommendation: "AVOID", entryRule: "NONE" };
+  }
+
+  if (!params.targetPriceTrustedForLearning) {
+    return {
+      recommendation: params.edge > 0 ? "WAIT" : "AVOID",
+      entryRule: "NONE"
+    };
   }
 
   if (params.edge >= 0.08) {
@@ -363,19 +376,21 @@ function isLightEntrySetup(params: {
   secondsToClose: number;
   distancePercent: number;
   predictedOutcome: PredictedOutcome;
+  targetPriceTrustedForLearning: boolean;
 }): boolean {
   const directionMultiplier = params.predictedOutcome === "UP" ? 1 : -1;
   const favorableDistance = params.distancePercent * directionMultiplier;
 
   return (
-    params.edge >= 0.02 &&
+    params.targetPriceTrustedForLearning &&
+    params.edge >= 0.015 &&
     params.entryPrice >= 0.35 &&
-    params.entryPrice <= 0.7 &&
-    params.secondsToClose >= 30 &&
+    params.entryPrice <= 0.82 &&
+    params.secondsToClose >= 25 &&
     params.secondsToClose <= 120 &&
     params.spread !== null &&
-    params.spread <= 0.03 &&
-    favorableDistance >= 0.001
+    params.spread <= 0.04 &&
+    favorableDistance >= 0.0005
   );
 }
 

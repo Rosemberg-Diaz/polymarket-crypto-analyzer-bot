@@ -462,6 +462,8 @@ export class CryptoMarketScannerJob {
       assetSymbol: market.assetSymbol,
       timeframe: market.timeframe,
       targetPrice: market.targetPrice,
+      targetPriceSource: market.targetPriceSource,
+      targetPriceTrustedForLearning: market.targetPriceTrustedForLearning,
       currentAssetPrice: runtimeData.currentAssetPrice,
       upPrice: runtimeData.upPrice,
       downPrice: runtimeData.downPrice,
