@@ -32,6 +32,8 @@ interface MarketRuntimeData {
 
 const DUPLICATE_SIGNAL_WINDOW_MS = 30 * 1000;
 const MAX_MARKETS_PER_SCAN = 25;
+const UP_DOWN_TARGET_CAPTURE_WINDOW_MS = 60 * 1000;
+const UP_DOWN_5M_WINDOW_MS = 5 * 60 * 1000;
 
 export class CryptoMarketScannerJob {
   private readonly polymarketClient = new PolymarketClient();
@@ -82,9 +84,10 @@ export class CryptoMarketScannerJob {
     await this.upsertOutcomes(savedMarket.id, normalizedMarket.outcomes);
 
     const runtimeData = await this.loadRuntimeData(normalizedMarket);
-    const marketKey = this.getMarketKey(normalizedMarket);
+    const market = await this.resolveUpDownTargetPrice(savedMarket.id, normalizedMarket, runtimeData);
+    const marketKey = this.getMarketKey(market);
     const shouldSkipSignal = await this.hasRecentSignal(savedMarket.id, marketKey);
-    const signalInput = this.toSignalInput(savedMarket.id, normalizedMarket, runtimeData);
+    const signalInput = this.toSignalInput(savedMarket.id, market, runtimeData);
     const signal = shouldSkipSignal
       ? createStaticSignal("crypto-market-scanner-duplicate", "Skipped duplicate signal within 30 seconds.", "WAIT")
       : await this.signalEngine.generateSignal(signalInput);
@@ -92,17 +95,17 @@ export class CryptoMarketScannerJob {
     const shouldStoreFullOrderbook = signal.recommendation !== "AVOID";
     const snapshot = await this.createSnapshot(
       savedMarket.id,
-      normalizedMarket,
+      market,
       runtimeData,
       shouldStoreFullOrderbook
     );
     let simulationText = "No simulation created.";
-    const hasOperationalStrategy = this.hasOperationalStrategy(normalizedMarket);
+    const hasOperationalStrategy = this.hasOperationalStrategy(market);
 
     if (!hasOperationalStrategy) {
-      simulationText = `Market stored without prediction: ${normalizedMarket.marketType} has no enabled strategy.`;
+      simulationText = `Market stored without prediction: ${market.marketType} has no enabled strategy.`;
     } else if (!shouldSkipSignal) {
-      const prediction = await this.createPrediction(savedMarket.id, snapshot.id, normalizedMarket, signalInput, signal);
+      const prediction = await this.createPrediction(savedMarket.id, snapshot.id, market, signalInput, signal);
       this.lastSignalByMarket.set(marketKey, Date.now());
 
       if (
@@ -125,7 +128,7 @@ export class CryptoMarketScannerJob {
       simulationText = "Duplicate signal skipped; market and snapshot were still updated.";
     }
 
-    this.printMarketResult(normalizedMarket, runtimeData, signal, riskAssessment, simulationText);
+    this.printMarketResult(market, runtimeData, signal, riskAssessment, simulationText);
   }
 
   private async upsertMarket(market: NormalizedCryptoMarket): Promise<Market> {
@@ -234,6 +237,65 @@ export class CryptoMarketScannerJob {
 
     const price = await this.polymarketClient.getPrice(outcome.externalTokenId, "BUY");
     return price.price ?? outcome.currentPrice;
+  }
+
+  private async resolveUpDownTargetPrice(
+    marketId: string,
+    market: NormalizedCryptoMarket,
+    runtimeData: MarketRuntimeData
+  ): Promise<NormalizedCryptoMarket> {
+    if (market.marketType !== "UP_DOWN_SHORT_TERM" || market.targetPrice !== null) {
+      return market;
+    }
+
+    const existingTarget = await prisma.marketSnapshot.findFirst({
+      where: {
+        marketId,
+        targetPrice: {
+          not: null
+        }
+      },
+      select: {
+        targetPrice: true
+      },
+      orderBy: {
+        createdAt: "asc"
+      }
+    });
+
+    if (existingTarget?.targetPrice) {
+      return withCapturedTarget(market, Number(existingTarget.targetPrice), "previous_snapshot");
+    }
+
+    const windowStart = inferUpDownWindowStart(market);
+    const currentPrice = runtimeData.currentAssetPrice;
+    const now = Date.now();
+
+    if (
+      windowStart !== null &&
+      currentPrice !== null &&
+      now >= windowStart.getTime() &&
+      now <= windowStart.getTime() + UP_DOWN_TARGET_CAPTURE_WINDOW_MS
+    ) {
+      this.logger.info("Captured Up/Down target price from local spot price.", {
+        market: market.question,
+        slug: market.slug,
+        assetSymbol: market.assetSymbol,
+        targetPrice: currentPrice,
+        source: "local_spot_at_window_start",
+        windowStart: windowStart.toISOString()
+      });
+
+      return withCapturedTarget(market, currentPrice, "local_spot_at_window_start");
+    }
+
+    return {
+      ...market,
+      nonOperableReason:
+        windowStart === null
+          ? "Cannot infer Up/Down window start for target capture."
+          : "Waiting to capture Up/Down target price near window start."
+    };
   }
 
   private async createSnapshot(
@@ -576,6 +638,54 @@ function extractMarketNumber(rawData: string, keys: string[]): number | null {
   }
 
   return null;
+}
+
+function withCapturedTarget(
+  market: NormalizedCryptoMarket,
+  targetPrice: number,
+  source: string
+): NormalizedCryptoMarket {
+  return {
+    ...market,
+    targetPrice,
+    isOperable: true,
+    nonOperableReason: null,
+    rawData: stringifyWithLimit({
+      ...parseJsonRecord(market.rawData),
+      derivedTargetPrice: {
+        value: targetPrice,
+        source,
+        capturedAt: new Date().toISOString()
+      }
+    })
+  };
+}
+
+function inferUpDownWindowStart(market: NormalizedCryptoMarket): Date | null {
+  const slugTimestamp = market.slug?.match(/-(\d{10})$/)?.[1];
+  if (slugTimestamp) {
+    const timestamp = Number(slugTimestamp);
+    if (Number.isFinite(timestamp) && timestamp > 0) {
+      return new Date(timestamp * 1000);
+    }
+  }
+
+  if (market.endDate && market.timeframe === "5m") {
+    return new Date(market.endDate.getTime() - UP_DOWN_5M_WINDOW_MS);
+  }
+
+  return null;
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function stringifyWithLimit(value: unknown, maxLength = 20_000): string {

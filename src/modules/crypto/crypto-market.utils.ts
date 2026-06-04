@@ -105,7 +105,14 @@ export function inferCryptoMarketType(
 ): CryptoMarketType {
   const text = normalizeSearchText(question, slug, description);
 
-  if (/\bUP\b/.test(text) && /\bDOWN\b/.test(text)) {
+  if (
+    (/\bUP\b/.test(text) && /\bDOWN\b/.test(text)) ||
+    (/\bHIGHER\b/.test(text) && /\bLOWER\b/.test(text)) ||
+    (/\bRISE\b/.test(text) && /\bFALL\b/.test(text)) ||
+    (/\bGREEN\b/.test(text) && /\bRED\b/.test(text)) ||
+    /\bUP\s+OR\s+DOWN\b/.test(text) ||
+    /\bHIGHER\s+OR\s+LOWER\b/.test(text)
+  ) {
     return "UP_DOWN_SHORT_TERM";
   }
 
@@ -131,15 +138,15 @@ export function inferTimeframe(
 ): CryptoTimeframe {
   const text = normalizeSearchText(question, slug, description);
 
-  if (/\b(5\s?M|5\s?MIN|5\s?MINUTE|5\s?MINUTES|FIVE\s?MINUTE)\b/.test(text)) {
+  if (/\b(5\s?M|5\s?MIN|5\s?MINS|5\s?MINUTE|5\s?MINUTES|FIVE\s?MINUTE|FIVE\s?MINUTES)\b/.test(text)) {
     return "5m";
   }
 
-  if (/\b(15\s?M|15\s?MIN|15\s?MINUTE|15\s?MINUTES|FIFTEEN\s?MINUTE)\b/.test(text)) {
+  if (/\b(15\s?M|15\s?MIN|15\s?MINS|15\s?MINUTE|15\s?MINUTES|FIFTEEN\s?MINUTE|FIFTEEN\s?MINUTES)\b/.test(text)) {
     return "15m";
   }
 
-  if (/\b(1\s?H|1\s?HR|1\s?HOUR|ONE\s?HOUR|HOURLY)\b/.test(text)) {
+  if (/\b(1\s?H|1\s?HR|1\s?HOUR|ONE\s?HOUR|HOURLY|THIS\s?HOUR|NEXT\s?HOUR|HOUR)\b/.test(text)) {
     return "1h";
   }
 

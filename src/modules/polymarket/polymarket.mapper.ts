@@ -114,7 +114,7 @@ function getTimeToClosePriority(market: NormalizedCryptoMarket): number {
   const secondsToClose = getSecondsToClose(market);
 
   if (!Number.isFinite(secondsToClose)) {
-    return 0;
+    return -180;
   }
 
   if (secondsToClose <= 15 * 60) return 120;

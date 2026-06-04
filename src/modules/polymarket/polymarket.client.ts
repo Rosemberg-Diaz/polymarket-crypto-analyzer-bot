@@ -2,7 +2,9 @@ import { CryptoMarketCandidate } from "../crypto/cryptoMarket";
 import {
   GetActiveMarketsParams,
   PolymarketClientOptions,
+  PolymarketEvent,
   PolymarketMarket,
+  PolymarketMarketPage,
   PolymarketOrderBook,
   PolymarketPriceResponse,
   PolymarketPricesHistoryPoint,
@@ -74,6 +76,117 @@ export class PolymarketClient {
     const raw = await this.requestUnknown(`${this.gammaBaseUrl}/markets?${searchParams.toString()}`);
 
     return normalizeMarkets(raw, true);
+  }
+
+  async getActiveEvents(params: GetActiveMarketsParams = {}): Promise<PolymarketEvent[]> {
+    const searchParams = new URLSearchParams();
+    searchParams.set("active", String(params.active ?? true));
+    searchParams.set("closed", String(params.closed ?? false));
+
+    if (params.limit !== undefined) {
+      searchParams.set("limit", String(params.limit));
+    }
+
+    if (params.offset !== undefined) {
+      searchParams.set("offset", String(params.offset));
+    }
+
+    if (params.archived !== undefined) {
+      searchParams.set("archived", String(params.archived));
+    }
+
+    if (params.tagId) {
+      searchParams.set("tag_id", params.tagId);
+    }
+
+    if (params.category) {
+      searchParams.set("category", params.category);
+    }
+
+    const raw = await this.requestUnknown(`${this.gammaBaseUrl}/events?${searchParams.toString()}`);
+    return normalizeEvents(raw, params.includeRaw);
+  }
+
+  async searchEvents(query: string): Promise<PolymarketEvent[]> {
+    if (!query.trim()) {
+      return [];
+    }
+
+    const searchParams = new URLSearchParams({
+      search: query,
+      active: "true",
+      closed: "false"
+    });
+    const raw = await this.requestUnknown(`${this.gammaBaseUrl}/events?${searchParams.toString()}`);
+
+    return normalizeEvents(raw, true);
+  }
+
+  async getEventBySlug(slug: string): Promise<PolymarketEvent | null> {
+    if (!slug.trim()) {
+      return null;
+    }
+
+    const raw = await this.requestUnknown(`${this.gammaBaseUrl}/events/slug/${encodeURIComponent(slug)}`);
+    if (isRecord(raw) && (raw.slug === slug || raw.ticker === slug)) {
+      return normalizeEvent(raw, true);
+    }
+
+    const events = normalizeEvents(raw, true);
+
+    return events[0] ?? (isRecord(raw) ? normalizeEvent(raw, true) : null);
+  }
+
+  async getActiveSeries(params: GetActiveMarketsParams = {}): Promise<PolymarketEvent[]> {
+    const searchParams = new URLSearchParams();
+    searchParams.set("active", String(params.active ?? true));
+    searchParams.set("closed", String(params.closed ?? false));
+
+    if (params.limit !== undefined) {
+      searchParams.set("limit", String(params.limit));
+    }
+
+    if (params.offset !== undefined) {
+      searchParams.set("offset", String(params.offset));
+    }
+
+    if (params.archived !== undefined) {
+      searchParams.set("archived", String(params.archived));
+    }
+
+    const raw = await this.requestUnknown(`${this.gammaBaseUrl}/series?${searchParams.toString()}`);
+    return normalizeEvents(raw, params.includeRaw);
+  }
+
+  async searchSeries(query: string): Promise<PolymarketEvent[]> {
+    if (!query.trim()) {
+      return [];
+    }
+
+    const searchParams = new URLSearchParams({
+      search: query,
+      active: "true",
+      closed: "false"
+    });
+    const raw = await this.requestUnknown(`${this.gammaBaseUrl}/series?${searchParams.toString()}`);
+
+    return normalizeEvents(raw, true);
+  }
+
+  async getSamplingMarketsPage(params: GetActiveMarketsParams = {}): Promise<PolymarketMarketPage> {
+    const searchParams = new URLSearchParams();
+
+    if (params.nextCursor) {
+      searchParams.set("next_cursor", params.nextCursor);
+    }
+
+    const query = searchParams.toString();
+    const raw = await this.requestUnknown(`${this.clobBaseUrl}/sampling-markets${query ? `?${query}` : ""}`);
+
+    return {
+      markets: normalizeMarkets(raw, params.includeRaw),
+      nextCursor: isRecord(raw) && typeof raw.next_cursor === "string" ? raw.next_cursor : null
+    };
   }
 
   async getMarketBySlug(slug: string): Promise<PolymarketMarket | null> {
@@ -242,11 +355,42 @@ function normalizeMarkets(raw: unknown, includeRaw = true): PolymarketMarket[] {
   return [];
 }
 
+function normalizeEvents(raw: unknown, includeRaw = true): PolymarketEvent[] {
+  const items = Array.isArray(raw)
+    ? raw
+    : isRecord(raw) && Array.isArray(raw.events)
+      ? raw.events
+      : isRecord(raw) && Array.isArray(raw.series)
+        ? raw.series
+        : isRecord(raw) && Array.isArray(raw.data)
+          ? raw.data
+          : [];
+
+  return items.filter(isRecord).map((item) => normalizeEvent(item, includeRaw));
+}
+
+function normalizeEvent(raw: Record<string, unknown>, includeRaw = true): PolymarketEvent {
+  return {
+    id: asString(raw.id),
+    slug: asString(raw.slug),
+    title: asString(raw.title),
+    ticker: asString(raw.ticker),
+    description: asString(raw.description),
+    category: asString(raw.category),
+    tags: normalizeTags(raw.tags),
+    active: asBoolean(raw.active),
+    closed: asBoolean(raw.closed),
+    archived: asBoolean(raw.archived),
+    markets: normalizeMarkets(raw.markets, includeRaw),
+    raw: includeRaw ? raw : undefined
+  };
+}
+
 function normalizeMarket(raw: Record<string, unknown>, includeRaw = true): PolymarketMarket {
   return {
     id: asString(raw.id),
     conditionId: asString(raw.conditionId ?? raw.condition_id),
-    slug: asString(raw.slug),
+    slug: asString(raw.slug ?? raw.market_slug),
     question: asString(raw.question),
     title: asString(raw.title),
     description: asString(raw.description),
@@ -256,7 +400,7 @@ function normalizeMarket(raw: Record<string, unknown>, includeRaw = true): Polym
     closed: asBoolean(raw.closed),
     archived: asBoolean(raw.archived),
     startDate: asString(raw.startDate ?? raw.start_date),
-    endDate: asString(raw.endDate ?? raw.end_date),
+    endDate: asString(raw.endDate ?? raw.end_date ?? raw.end_date_iso),
     resolutionSource: asString(raw.resolutionSource ?? raw.resolution_source),
     outcomes: raw.outcomes,
     tokens: normalizeTokens(raw.tokens ?? raw.clobTokenIds ?? raw.clob_token_ids),
@@ -300,8 +444,10 @@ function parseMaybeJson(value: unknown): unknown {
 }
 
 function normalizeTokens(raw: unknown): PolymarketMarket["tokens"] {
-  if (Array.isArray(raw)) {
-    return raw.map((item) => {
+  const parsed = parseMaybeJson(raw);
+
+  if (Array.isArray(parsed)) {
+    return parsed.map((item) => {
       if (isRecord(item)) {
         return {
           token_id: asString(item.token_id),

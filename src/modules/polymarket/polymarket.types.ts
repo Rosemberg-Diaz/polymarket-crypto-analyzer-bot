@@ -11,6 +11,7 @@ export interface PolymarketClientOptions {
 export interface GetActiveMarketsParams {
   limit?: number;
   offset?: number;
+  nextCursor?: string;
   active?: boolean;
   closed?: boolean;
   archived?: boolean;
@@ -36,6 +37,26 @@ export interface PolymarketMarket {
   resolutionSource?: string;
   outcomes?: unknown;
   tokens?: PolymarketToken[];
+  raw?: unknown;
+}
+
+export interface PolymarketMarketPage {
+  markets: PolymarketMarket[];
+  nextCursor: string | null;
+}
+
+export interface PolymarketEvent {
+  id?: string;
+  slug?: string;
+  title?: string;
+  ticker?: string;
+  description?: string;
+  category?: string;
+  tags?: string[];
+  active?: boolean;
+  closed?: boolean;
+  archived?: boolean;
+  markets?: PolymarketMarket[];
   raw?: unknown;
 }
 

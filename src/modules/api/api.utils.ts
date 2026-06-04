@@ -1,10 +1,26 @@
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Prisma } from "@prisma/client";
 
+function resolveAllowedOrigin(req?: IncomingMessage): string {
+  const origin = req?.headers.origin;
+  if (!origin) return "http://localhost:5173";
+
+  try {
+    const parsed = new URL(origin);
+    if (["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)) {
+      return origin;
+    }
+  } catch {
+    return "http://localhost:5173";
+  }
+
+  return "http://localhost:5173";
+}
+
 export function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "http://localhost:5173",
+    "Access-Control-Allow-Origin": resolveAllowedOrigin(res.req),
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Cache-Control": "no-store"
@@ -12,9 +28,9 @@ export function sendJson(res: ServerResponse, statusCode: number, payload: unkno
   res.end(JSON.stringify(toJsonSafe(payload)));
 }
 
-export function sendOptions(res: ServerResponse): void {
+export function sendOptions(res: ServerResponse, req?: IncomingMessage): void {
   res.writeHead(204, {
-    "Access-Control-Allow-Origin": "http://localhost:5173",
+    "Access-Control-Allow-Origin": resolveAllowedOrigin(req ?? res.req),
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type"
   });
