@@ -32,8 +32,11 @@ interface MarketRuntimeData {
 
 const DUPLICATE_SIGNAL_WINDOW_MS = 30 * 1000;
 const MAX_MARKETS_PER_SCAN = 25;
+const MAX_HEAVY_MARKETS_PER_SCAN = 12;
+const HEAVY_DISCOVERY_SCAN_INTERVAL_MS = 60 * 1000;
 const UP_DOWN_TARGET_CAPTURE_WINDOW_MS = 60 * 1000;
 const UP_DOWN_5M_WINDOW_MS = 5 * 60 * 1000;
+const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL"]);
 
 export class CryptoMarketScannerJob {
   private readonly polymarketClient = new PolymarketClient();
@@ -44,6 +47,7 @@ export class CryptoMarketScannerJob {
   private readonly featureBuilderService = new FeatureBuilderService();
   private readonly cryptoPriceService: CryptoPriceService;
   private readonly lastSignalByMarket = new Map<string, number>();
+  private lastHeavyDiscoveryAt = 0;
 
   constructor(private readonly logger: LoggerService) {
     this.polymarketService = new PolymarketService(this.polymarketClient, this.logger);
@@ -53,8 +57,21 @@ export class CryptoMarketScannerJob {
   async runOnce(): Promise<void> {
     this.logger.info("Crypto market scanner started.");
 
-    const markets = await this.polymarketService.getActiveCryptoMarkets({ limit: 200 });
-    const prioritizedMarkets = markets.slice(0, MAX_MARKETS_PER_SCAN);
+    const fastMarkets = await this.polymarketService.getFastCryptoUpDown5mMarkets();
+    let heavyMarkets: NormalizedCryptoMarket[] = [];
+
+    if (Date.now() - this.lastHeavyDiscoveryAt >= HEAVY_DISCOVERY_SCAN_INTERVAL_MS) {
+      heavyMarkets = await this.polymarketService.getActiveCryptoMarkets({ limit: 200 });
+      this.lastHeavyDiscoveryAt = Date.now();
+    } else {
+      this.logger.debug("Skipping heavy Polymarket discovery; fast Up/Down scan only.", {
+        nextHeavyDiscoveryInSeconds: Math.ceil(
+          (HEAVY_DISCOVERY_SCAN_INTERVAL_MS - (Date.now() - this.lastHeavyDiscoveryAt)) / 1000
+        )
+      });
+    }
+
+    const prioritizedMarkets = this.buildScanQueue(fastMarkets, heavyMarkets);
 
     if (prioritizedMarkets.length === 0) {
       this.logger.warn("No active crypto markets found from Polymarket.");
@@ -74,14 +91,46 @@ export class CryptoMarketScannerJob {
     }
 
     this.logger.info("Crypto market scanner finished.", {
-      fetchedCryptoMarkets: markets.length,
+      fastMarkets: fastMarkets.length,
+      heavyMarkets: heavyMarkets.length,
       processedMarkets: prioritizedMarkets.length
     });
+  }
+
+  private buildScanQueue(
+    fastMarkets: NormalizedCryptoMarket[],
+    heavyMarkets: NormalizedCryptoMarket[]
+  ): NormalizedCryptoMarket[] {
+    const queue = new Map<string, NormalizedCryptoMarket>();
+
+    for (const market of fastMarkets.filter((market) => this.isFastUpDownMarket(market))) {
+      queue.set(this.getMarketKey(market), market);
+    }
+
+    for (const market of heavyMarkets.slice(0, MAX_MARKETS_PER_SCAN)) {
+      if (queue.size >= MAX_HEAVY_MARKETS_PER_SCAN + fastMarkets.length) {
+        break;
+      }
+
+      queue.set(this.getMarketKey(market), market);
+    }
+
+    return [...queue.values()].slice(0, MAX_MARKETS_PER_SCAN);
   }
 
   private async processMarket(normalizedMarket: NormalizedCryptoMarket): Promise<void> {
     const savedMarket = await this.upsertMarket(normalizedMarket);
     await this.upsertOutcomes(savedMarket.id, normalizedMarket.outcomes);
+
+    if (this.shouldStoreMetadataOnly(normalizedMarket)) {
+      this.logger.debug("Stored future Up/Down market metadata without snapshot.", {
+        market: normalizedMarket.question,
+        slug: normalizedMarket.slug,
+        assetSymbol: normalizedMarket.assetSymbol,
+        endDate: normalizedMarket.endDate?.toISOString() ?? null
+      });
+      return;
+    }
 
     const runtimeData = await this.loadRuntimeData(normalizedMarket);
     const market = await this.resolveUpDownTargetPrice(savedMarket.id, normalizedMarket, runtimeData);
@@ -447,6 +496,27 @@ export class CryptoMarketScannerJob {
 
   private getMarketKey(market: NormalizedCryptoMarket): string {
     return market.externalMarketId ?? market.slug ?? market.question;
+  }
+
+  private isFastUpDownMarket(market: NormalizedCryptoMarket): boolean {
+    return (
+      market.marketType === "UP_DOWN_SHORT_TERM" &&
+      market.timeframe === "5m" &&
+      FAST_UP_DOWN_ASSETS.has(market.assetSymbol)
+    );
+  }
+
+  private shouldStoreMetadataOnly(market: NormalizedCryptoMarket): boolean {
+    if (market.marketType !== "UP_DOWN_SHORT_TERM" || market.targetPrice !== null) {
+      return false;
+    }
+
+    const windowStart = inferUpDownWindowStart(market);
+    if (!windowStart) {
+      return false;
+    }
+
+    return windowStart.getTime() > Date.now() + UP_DOWN_TARGET_CAPTURE_WINDOW_MS;
   }
 
   private hasOperationalStrategy(market: NormalizedCryptoMarket): boolean {

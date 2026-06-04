@@ -21,6 +21,7 @@ const CLOB_SAMPLING_MARKET_MAX_PAGES = 6;
 const DISCOVERY_CACHE_TTL_MS = 60 * 1000;
 const RECURRING_UP_DOWN_ASSETS = ["btc", "eth", "sol"] as const;
 const RECURRING_UP_DOWN_TIMEFRAME_SECONDS = 5 * 60;
+const FAST_RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS = [0];
 const RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS = [
   -5 * 60,
   0,
@@ -70,6 +71,16 @@ export class PolymarketService {
     const cryptoMarkets = markets
       .map((market) => mapPolymarketMarketToCryptoMarket(market))
       .filter((market): market is NormalizedCryptoMarket => market !== null);
+
+    return sortPolymarketCryptoMarkets(cryptoMarkets);
+  }
+
+  async getFastCryptoUpDown5mMarkets(): Promise<NormalizedCryptoMarket[]> {
+    const markets = await this.fetchRecurringCryptoUpDownMarkets(FAST_RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS);
+    const cryptoMarkets = markets
+      .map((market) => mapPolymarketMarketToCryptoMarket(market))
+      .filter((market): market is NormalizedCryptoMarket => market !== null)
+      .filter((market) => market.marketType === "UP_DOWN_SHORT_TERM" && market.timeframe === "5m");
 
     return sortPolymarketCryptoMarkets(cryptoMarkets);
   }
@@ -132,7 +143,9 @@ export class PolymarketService {
     const seriesSearches = await Promise.all(
       TARGETED_DISCOVERY_QUERIES.map((query) => this.client.searchSeries(query))
     );
-    const recurringUpDownMarkets = await this.fetchRecurringCryptoUpDownMarkets();
+    const recurringUpDownMarkets = await this.fetchRecurringCryptoUpDownMarkets(
+      RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS
+    );
     const samplingMarkets = await this.fetchClobSamplingMarkets();
     const generalMarkets = marketPages.flat();
     const activeEvents = eventPages.flat();
@@ -189,14 +202,12 @@ export class PolymarketService {
     return candidates;
   }
 
-  private async fetchRecurringCryptoUpDownMarkets(): Promise<PolymarketMarket[]> {
+  private async fetchRecurringCryptoUpDownMarkets(offsetsSeconds: number[]): Promise<PolymarketMarket[]> {
     const baseTimestamp =
       Math.floor(Date.now() / 1000 / RECURRING_UP_DOWN_TIMEFRAME_SECONDS) *
       RECURRING_UP_DOWN_TIMEFRAME_SECONDS;
     const slugs = RECURRING_UP_DOWN_ASSETS.flatMap((asset) =>
-      RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS.map(
-        (offset) => `${asset}-updown-5m-${baseTimestamp + offset}`
-      )
+      offsetsSeconds.map((offset) => `${asset}-updown-5m-${baseTimestamp + offset}`)
     );
     const events = await Promise.all(slugs.map((slug) => this.client.getEventBySlug(slug)));
 

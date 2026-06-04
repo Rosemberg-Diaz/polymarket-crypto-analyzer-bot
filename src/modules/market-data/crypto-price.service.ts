@@ -4,7 +4,7 @@ import { LoggerService } from "../logger/logger.service";
 export interface CryptoSpotPrice {
   assetSymbol: CryptoAsset;
   priceUsd: number | null;
-  source: "COINGECKO" | "UNSUPPORTED" | "ERROR";
+  source: "COINBASE" | "COINGECKO" | "UNSUPPORTED" | "ERROR";
   fetchedAt: Date;
 }
 
@@ -14,6 +14,7 @@ interface CachedPrice {
 }
 
 const COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3";
+const COINBASE_BASE_URL = "https://api.coinbase.com/v2";
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
@@ -27,6 +28,15 @@ const COINGECKO_IDS: Partial<Record<CryptoAsset, string>> = {
   DOGE: "dogecoin",
   AVAX: "avalanche-2",
   BNB: "binancecoin"
+};
+
+const COINBASE_PAIRS: Partial<Record<CryptoAsset, string>> = {
+  BTC: "BTC-USD",
+  ETH: "ETH-USD",
+  SOL: "SOL-USD",
+  XRP: "XRP-USD",
+  DOGE: "DOGE-USD",
+  AVAX: "AVAX-USD"
 };
 
 export class CryptoPriceService {
@@ -45,9 +55,21 @@ export class CryptoPriceService {
       return cached.value;
     }
 
+    const coinbasePair = COINBASE_PAIRS[assetSymbol];
     const coingeckoId = COINGECKO_IDS[assetSymbol];
-    if (!coingeckoId) {
+    if (!coinbasePair && !coingeckoId) {
       return this.cacheAndReturn(assetSymbol, null, "UNSUPPORTED");
+    }
+
+    if (coinbasePair) {
+      const coinbasePrice = await this.fetchCoinbasePrice(assetSymbol, coinbasePair);
+      if (coinbasePrice !== null) {
+        return this.cacheAndReturn(assetSymbol, coinbasePrice, "COINBASE");
+      }
+    }
+
+    if (!coingeckoId) {
+      return this.cacheAndReturn(assetSymbol, null, "ERROR");
     }
 
     const url = `${COINGECKO_BASE_URL}/simple/price?ids=${encodeURIComponent(coingeckoId)}&vs_currencies=usd`;
@@ -111,6 +133,66 @@ export class CryptoPriceService {
     return this.cacheAndReturn(assetSymbol, null, "ERROR");
   }
 
+  private async fetchCoinbasePrice(assetSymbol: CryptoAsset, pair: string): Promise<number | null> {
+    const url = `${COINBASE_BASE_URL}/prices/${encodeURIComponent(pair)}/spot`;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          signal: controller.signal,
+          headers: {
+            Accept: "application/json"
+          }
+        });
+
+        if (response.status === 429 && attempt < this.maxRetries) {
+          const backoffMs = this.getBackoffMs(attempt, response);
+          this.logger?.warn("Coinbase rate limit hit. Backing off before retry.", {
+            assetSymbol,
+            backoffMs
+          });
+          await sleep(backoffMs);
+          continue;
+        }
+
+        if (!response.ok) {
+          if (isTemporaryStatus(response.status) && attempt < this.maxRetries) {
+            await sleep(this.getBackoffMs(attempt, response));
+            continue;
+          }
+
+          this.logger?.warn("Coinbase price request returned non-OK response. Falling back.", {
+            assetSymbol,
+            status: response.status
+          });
+          return null;
+        }
+
+        const raw = (await response.json()) as unknown;
+        return extractCoinbaseUsdPrice(raw);
+      } catch (error) {
+        if (attempt < this.maxRetries) {
+          await sleep(this.getBackoffMs(attempt));
+          continue;
+        }
+
+        this.logger?.warn("Coinbase price request failed. Falling back.", {
+          assetSymbol,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    return null;
+  }
+
   private cacheAndReturn(
     assetSymbol: CryptoAsset,
     priceUsd: number | null,
@@ -155,6 +237,20 @@ function extractUsdPrice(raw: unknown, coingeckoId: string): number | null {
 
   const price = Number((asset as Record<string, unknown>).usd);
   return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function extractCoinbaseUsdPrice(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const data = (raw as Record<string, unknown>).data;
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const amount = Number((data as Record<string, unknown>).amount);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
 function isTemporaryStatus(status: number): boolean {

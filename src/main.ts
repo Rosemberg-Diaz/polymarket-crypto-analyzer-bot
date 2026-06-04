@@ -8,6 +8,9 @@ import { ResolveSimulatedTradesJob } from "./modules/jobs/resolve-simulated-trad
 import { LearningService } from "./modules/learning/learningService";
 import { LoggerService } from "./modules/logger/logger.service";
 
+const UP_DOWN_5M_BOUNDARY_MS = 5 * 60 * 1000;
+const UP_DOWN_BOUNDARY_CAPTURE_DELAY_MS = 1_000;
+
 async function bootstrap(): Promise<void> {
   const logger = new LoggerService(config.logLevel);
   const backupService = new BackupService(logger);
@@ -69,7 +72,7 @@ async function bootstrap(): Promise<void> {
     }
 
     if (!isShuttingDown) {
-      scanTimer = setTimeout(runScanLoop, config.scanIntervalSeconds * 1000);
+      scanTimer = setTimeout(runScanLoop, getNextScanDelayMs(config.scanIntervalSeconds));
     }
   }
 
@@ -129,3 +132,14 @@ bootstrap().catch(async (error: unknown) => {
   await disconnectDatabase();
   process.exitCode = 1;
 });
+
+function getNextScanDelayMs(scanIntervalSeconds: number): number {
+  const configuredDelayMs = scanIntervalSeconds * 1000;
+  const now = Date.now();
+  const nextBoundaryAt =
+    Math.ceil(now / UP_DOWN_5M_BOUNDARY_MS) * UP_DOWN_5M_BOUNDARY_MS +
+    UP_DOWN_BOUNDARY_CAPTURE_DELAY_MS;
+  const boundaryDelayMs = Math.max(0, nextBoundaryAt - now);
+
+  return Math.min(configuredDelayMs, boundaryDelayMs);
+}
