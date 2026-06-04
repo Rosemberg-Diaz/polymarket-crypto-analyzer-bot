@@ -23,6 +23,12 @@ interface StrategyFeatures extends Record<string, unknown> {
   volatilityPenalty: number;
   strongDistance: boolean;
   highEntryPrice: boolean;
+  entryRule: "NONE" | "ENTER_SMALL_STANDARD" | "ENTER_SMALL_LIGHT" | "ENTER_MODERATE_STANDARD";
+}
+
+interface RecommendationDecision {
+  recommendation: Recommendation;
+  entryRule: StrategyFeatures["entryRule"];
 }
 
 export class CryptoUpDownShortTermStrategy {
@@ -94,7 +100,17 @@ export class CryptoUpDownShortTermStrategy {
       entryPrice
     });
     const edge = botProbability - impliedProbability;
-    const recommendation = decideRecommendation(edge, highEntryPrice, secondsToClose, strongDistance);
+    const recommendationDecision = decideRecommendation({
+      edge,
+      highEntryPrice,
+      secondsToClose,
+      strongDistance,
+      entryPrice,
+      spread: input.spread,
+      distancePercent,
+      predictedOutcome
+    });
+    const recommendation = recommendationDecision.recommendation;
     const confidence = decideConfidence(edge, absDistancePercent, secondsToClose, input);
     const features = this.buildFeatures(
       input,
@@ -102,7 +118,8 @@ export class CryptoUpDownShortTermStrategy {
       absDistance,
       distancePercent,
       momentumScore,
-      volatilityPenalty
+      volatilityPenalty,
+      recommendationDecision.entryRule
     );
 
     return {
@@ -126,7 +143,8 @@ export class CryptoUpDownShortTermStrategy {
         botProbability,
         edge,
         recommendation,
-        predictedOutcome
+        predictedOutcome,
+        entryRule: recommendationDecision.entryRule
       }),
       features,
       confidenceAdjustment: 0,
@@ -216,7 +234,8 @@ export class CryptoUpDownShortTermStrategy {
     absDistance: number | null,
     distancePercent: number | null,
     momentumScore: number,
-    volatilityPenalty: number
+    volatilityPenalty: number,
+    entryRule: StrategyFeatures["entryRule"] = "NONE"
   ): StrategyFeatures {
     return {
       assetSymbol: input.assetSymbol,
@@ -233,7 +252,8 @@ export class CryptoUpDownShortTermStrategy {
       momentumScore: round6(momentumScore),
       volatilityPenalty: round6(volatilityPenalty),
       strongDistance: distancePercent !== null && Math.abs(distancePercent) >= 0.004,
-      highEntryPrice: Boolean((input.upPrice !== null && input.upPrice > 0.8) || (input.downPrice !== null && input.downPrice > 0.8))
+      highEntryPrice: Boolean((input.upPrice !== null && input.upPrice > 0.8) || (input.downPrice !== null && input.downPrice > 0.8)),
+      entryRule
     };
   }
 
@@ -250,6 +270,7 @@ export class CryptoUpDownShortTermStrategy {
     edge: number;
     recommendation: Recommendation;
     predictedOutcome: PredictedOutcome;
+    entryRule: StrategyFeatures["entryRule"];
   }): string {
     return [
       `Activo: ${params.input.assetSymbol}.`,
@@ -263,6 +284,7 @@ export class CryptoUpDownShortTermStrategy {
       `Probabilidad implicita: ${round6(params.impliedProbability)}.`,
       `Probabilidad estimada: ${round6(params.botProbability)}.`,
       `Edge: ${round6(params.edge)}.`,
+      `Regla de entrada: ${params.entryRule}.`,
       `Decision final: ${params.recommendation}.`
     ].join(" ");
   }
@@ -298,29 +320,63 @@ function calculateVolatilityPenalty(input: SignalInput): number {
   return clamp(averageVolatility * 0.3, 0, 0.08);
 }
 
-function decideRecommendation(
-  edge: number,
-  highEntryPrice: boolean,
-  secondsToClose: number,
-  strongDistance: boolean
-): Recommendation {
-  if (highEntryPrice && !(secondsToClose < 45 && strongDistance)) {
-    return "AVOID";
+function decideRecommendation(params: {
+  edge: number;
+  highEntryPrice: boolean;
+  secondsToClose: number;
+  strongDistance: boolean;
+  entryPrice: number;
+  spread: number | null;
+  distancePercent: number;
+  predictedOutcome: PredictedOutcome;
+}): RecommendationDecision {
+  if (params.highEntryPrice && !(params.secondsToClose < 45 && params.strongDistance)) {
+    return { recommendation: "AVOID", entryRule: "NONE" };
   }
 
-  if (edge >= 0.08) {
-    return "ENTER_MODERATE";
+  if (params.edge >= 0.08) {
+    return { recommendation: "ENTER_MODERATE", entryRule: "ENTER_MODERATE_STANDARD" };
   }
 
-  if (edge >= 0.03) {
-    return "ENTER_SMALL";
+  if (params.edge >= 0.03) {
+    return { recommendation: "ENTER_SMALL", entryRule: "ENTER_SMALL_STANDARD" };
   }
 
-  if (edge > 0) {
-    return "WAIT";
+  if (isLightEntrySetup(params)) {
+    return { recommendation: "ENTER_SMALL", entryRule: "ENTER_SMALL_LIGHT" };
   }
 
-  return strongDistance && secondsToClose < 60 ? "WAIT" : "AVOID";
+  if (params.edge > 0) {
+    return { recommendation: "WAIT", entryRule: "NONE" };
+  }
+
+  return {
+    recommendation: params.strongDistance && params.secondsToClose < 60 ? "WAIT" : "AVOID",
+    entryRule: "NONE"
+  };
+}
+
+function isLightEntrySetup(params: {
+  edge: number;
+  entryPrice: number;
+  spread: number | null;
+  secondsToClose: number;
+  distancePercent: number;
+  predictedOutcome: PredictedOutcome;
+}): boolean {
+  const directionMultiplier = params.predictedOutcome === "UP" ? 1 : -1;
+  const favorableDistance = params.distancePercent * directionMultiplier;
+
+  return (
+    params.edge >= 0.02 &&
+    params.entryPrice >= 0.35 &&
+    params.entryPrice <= 0.7 &&
+    params.secondsToClose >= 30 &&
+    params.secondsToClose <= 120 &&
+    params.spread !== null &&
+    params.spread <= 0.03 &&
+    favorableDistance >= 0.001
+  );
 }
 
 function decideConfidence(

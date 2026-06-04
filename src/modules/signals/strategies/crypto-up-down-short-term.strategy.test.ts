@@ -85,4 +85,28 @@ describe("CryptoUpDownShortTermStrategy", () => {
     expect(result.strategyName).toBe("crypto-up-down-short-term-v1");
     expect(result.predictedOutcome).toBe("UP");
   });
+
+  it("marks conditional light entries separately from standard small entries", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        currentAssetPrice: 100.22,
+        targetPrice: 100,
+        upPrice: 0.55,
+        downPrice: 0.44,
+        yesPrice: 0.55,
+        noPrice: 0.44,
+        spread: 0.02,
+        secondsToClose: 90,
+        momentumLast30s: null,
+        momentumLast60s: null,
+        momentumLast120s: null,
+        volatilityLast60s: null,
+        volatilityLast120s: null
+      })
+    );
+
+    expect(result.recommendation).toBe("ENTER_SMALL");
+    expect(result.features.entryRule).toBe("ENTER_SMALL_LIGHT");
+    expect(result.reason).toContain("Regla de entrada: ENTER_SMALL_LIGHT");
+  });
 });
