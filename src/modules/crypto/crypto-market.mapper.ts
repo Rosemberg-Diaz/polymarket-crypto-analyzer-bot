@@ -26,6 +26,8 @@ export function mapPolymarketCryptoMarket(rawMarket: RawPolymarketLikeMarket): N
   const rawData = rawMarket.rawData ?? rawMarket;
   const marketType = inferCryptoMarketType(question, slug, description);
   const targetPrice = extractTargetPrice(question, description, rawData);
+  const targetPriceSource = targetPrice === null ? "UNKNOWN" : "POLYMARKET_GAMMA";
+  const targetPriceTrustedForLearning = targetPrice !== null;
   const outcomes = normalizeOutcomes(rawMarket.outcomes, rawMarket.tokens);
   const tokenIds = outcomes.flatMap((outcome) => (outcome.externalTokenId ? [outcome.externalTokenId] : []));
   const nonOperableReason = getNonOperableReason({
@@ -52,12 +54,24 @@ export function mapPolymarketCryptoMarket(rawMarket: RawPolymarketLikeMarket): N
     endDate: parseDate(rawMarket.endDate),
     resolutionSource: rawMarket.resolutionSource ?? null,
     targetPrice,
+    targetPriceSource,
+    targetPriceTrustedForLearning,
     outcomes,
     tokenIds,
     isOperable: nonOperableReason === null,
     nonOperableReason,
     priorityScore: 0,
-    rawData: safeStringify(rawData)
+    rawData: safeStringify({
+      ...toRecord(rawData),
+      mappedTargetPrice:
+        targetPrice === null
+          ? undefined
+          : {
+              value: targetPrice,
+              source: targetPriceSource,
+              trustedForLearning: targetPriceTrustedForLearning
+            }
+    })
   };
 }
 
@@ -227,4 +241,8 @@ function safeStringify(value: unknown, maxLength = 20_000): string {
   } catch {
     return "{}";
   }
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }

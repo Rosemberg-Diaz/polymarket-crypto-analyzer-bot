@@ -3,6 +3,15 @@ import { CryptoAsset, CryptoMarketType } from "../../config/assets";
 export type CryptoTimeframe = "5m" | "15m" | "1h" | "1d" | "unknown";
 
 export type NormalizedOutcomeName = "UP" | "DOWN" | "YES" | "NO" | "OTHER";
+export type TargetPriceSource =
+  | "POLYMARKET_GAMMA"
+  | "POLYMARKET_CRYPTO_PRICE_API"
+  | "POLYMARKET_RTDS_CHAINLINK"
+  | "POLYMARKET_UI_PAYLOAD"
+  | "POLYMARKET_UMA_ANCILLARY"
+  | "LOCAL_SPOT_APPROXIMATION"
+  | "PREVIOUS_SNAPSHOT"
+  | "UNKNOWN";
 
 export interface CryptoMarketTextInput {
   question?: string | null;
@@ -58,6 +67,8 @@ export interface NormalizedCryptoMarket {
   endDate: Date | null;
   resolutionSource: string | null;
   targetPrice: number | null;
+  targetPriceSource: TargetPriceSource;
+  targetPriceTrustedForLearning: boolean;
   outcomes: NormalizedCryptoMarketOutcome[];
   tokenIds: string[];
   isOperable: boolean;

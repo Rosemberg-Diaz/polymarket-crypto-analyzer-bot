@@ -8,6 +8,7 @@ import {
 import { LoggerService } from "../logger/logger.service";
 import { CryptoPriceService } from "../market-data/crypto-price.service";
 import { FeatureBuilderService } from "../market-data/feature-builder.service";
+import { OfficialTargetResolverService } from "../market-data/official-target-resolver.service";
 import { PolymarketClient } from "../polymarket/polymarket.client";
 import { PolymarketService } from "../polymarket/polymarket.service";
 import { PolymarketOrderBook } from "../polymarket/polymarket.types";
@@ -50,12 +51,14 @@ export class CryptoMarketScannerJob {
   private readonly riskService = new RiskService();
   private readonly simulationService = new SimulationService(this.riskService);
   private readonly featureBuilderService = new FeatureBuilderService();
+  private readonly officialTargetResolverService: OfficialTargetResolverService;
   private readonly cryptoPriceService: CryptoPriceService;
   private readonly lastSignalByMarket = new Map<string, number>();
   private lastHeavyDiscoveryAt = 0;
 
   constructor(private readonly logger: LoggerService) {
     this.polymarketService = new PolymarketService(this.polymarketClient, this.logger);
+    this.officialTargetResolverService = new OfficialTargetResolverService(this.logger);
     this.cryptoPriceService = new CryptoPriceService(this.logger);
   }
 
@@ -323,7 +326,8 @@ export class CryptoMarketScannerJob {
         }
       },
       select: {
-        targetPrice: true
+        targetPrice: true,
+        rawData: true
       },
       orderBy: {
         createdAt: "asc"
@@ -331,7 +335,33 @@ export class CryptoMarketScannerJob {
     });
 
     if (existingTarget?.targetPrice) {
-      return withCapturedTarget(market, Number(existingTarget.targetPrice), "previous_snapshot");
+      const targetSource = getTargetPriceSource(existingTarget.rawData ?? "") ?? "PREVIOUS_SNAPSHOT";
+      return withCapturedTarget(
+        market,
+        Number(existingTarget.targetPrice),
+        targetSource,
+        isTrustedTargetSource(targetSource)
+      );
+    }
+
+    const officialTarget = await this.officialTargetResolverService.resolveOfficialTarget(market);
+    if (officialTarget.targetPrice !== null) {
+      this.logger.info("Captured Up/Down official target price.", {
+        market: market.question,
+        slug: market.slug,
+        assetSymbol: market.assetSymbol,
+        targetPrice: officialTarget.targetPrice,
+        source: officialTarget.source,
+        trustedForLearning: officialTarget.trustedForLearning,
+        reason: officialTarget.reason
+      });
+
+      return withCapturedTarget(
+        market,
+        officialTarget.targetPrice,
+        officialTarget.source,
+        officialTarget.trustedForLearning
+      );
     }
 
     const windowStart = inferUpDownWindowStart(market);
@@ -349,11 +379,12 @@ export class CryptoMarketScannerJob {
         slug: market.slug,
         assetSymbol: market.assetSymbol,
         targetPrice: currentPrice,
-        source: "local_spot_at_window_start",
+        source: "LOCAL_SPOT_APPROXIMATION",
+        trustedForLearning: false,
         windowStart: windowStart.toISOString()
       });
 
-      return withCapturedTarget(market, currentPrice, "local_spot_at_window_start");
+      return withCapturedTarget(market, currentPrice, "LOCAL_SPOT_APPROXIMATION", false);
     }
 
     return {
@@ -410,6 +441,8 @@ export class CryptoMarketScannerJob {
             isOperable: market.isOperable,
             nonOperableReason: market.nonOperableReason
           },
+          targetPriceSource: getTargetPriceSource(market.rawData),
+          targetPriceTrustedForLearning: getTargetPriceTrustedForLearning(market.rawData),
           orderbookSummary: runtimeData.orderbookSummary
         })
       }
@@ -878,11 +911,14 @@ function extractMarketNumber(rawData: string, keys: string[]): number | null {
 function withCapturedTarget(
   market: NormalizedCryptoMarket,
   targetPrice: number,
-  source: string
+  source: string,
+  trustedForLearning: boolean
 ): NormalizedCryptoMarket {
   return {
     ...market,
     targetPrice,
+    targetPriceSource: source as NormalizedCryptoMarket["targetPriceSource"],
+    targetPriceTrustedForLearning: trustedForLearning,
     isOperable: true,
     nonOperableReason: null,
     rawData: stringifyWithLimit({
@@ -890,6 +926,7 @@ function withCapturedTarget(
       derivedTargetPrice: {
         value: targetPrice,
         source,
+        trustedForLearning,
         capturedAt: new Date().toISOString()
       }
     })
@@ -921,6 +958,50 @@ function parseJsonRecord(value: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function getTargetPriceSource(rawData: string): string | null {
+  const record = parseJsonRecord(rawData);
+  const derivedTargetPrice = record.derivedTargetPrice;
+
+  if (derivedTargetPrice && typeof derivedTargetPrice === "object") {
+    const source = (derivedTargetPrice as Record<string, unknown>).source;
+    return typeof source === "string" ? source : null;
+  }
+
+  const mappedTargetPrice = record.mappedTargetPrice;
+  if (mappedTargetPrice && typeof mappedTargetPrice === "object") {
+    const source = (mappedTargetPrice as Record<string, unknown>).source;
+    return typeof source === "string" ? source : null;
+  }
+
+  return record.targetPrice !== undefined ? "POLYMARKET_GAMMA" : null;
+}
+
+function getTargetPriceTrustedForLearning(rawData: string): boolean {
+  const record = parseJsonRecord(rawData);
+  const derivedTargetPrice = record.derivedTargetPrice;
+
+  if (derivedTargetPrice && typeof derivedTargetPrice === "object") {
+    return (derivedTargetPrice as Record<string, unknown>).trustedForLearning === true;
+  }
+
+  const mappedTargetPrice = record.mappedTargetPrice;
+  if (mappedTargetPrice && typeof mappedTargetPrice === "object") {
+    return (mappedTargetPrice as Record<string, unknown>).trustedForLearning === true;
+  }
+
+  return record.targetPrice !== undefined;
+}
+
+function isTrustedTargetSource(source: string): boolean {
+  return [
+    "POLYMARKET_GAMMA",
+    "POLYMARKET_CRYPTO_PRICE_API",
+    "POLYMARKET_RTDS_CHAINLINK",
+    "POLYMARKET_UI_PAYLOAD",
+    "POLYMARKET_UMA_ANCILLARY"
+  ].includes(source);
 }
 
 function stringifyWithLimit(value: unknown, maxLength = 20_000): string {
