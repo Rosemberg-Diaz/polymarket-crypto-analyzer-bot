@@ -131,7 +131,9 @@ export class SimulationService {
       targetPrice: prediction.snapshot.targetPrice === null ? null : Number(prediction.snapshot.targetPrice),
       currentAssetPrice:
         prediction.snapshot.currentAssetPrice === null ? null : Number(prediction.snapshot.currentAssetPrice),
-      predictionIdToExclude: predictionId
+      predictionIdToExclude: predictionId,
+      recommendation: prediction.recommendation,
+      predictedOutcome: prediction.predictedOutcome
     });
 
     if (!assessment.allowed) {

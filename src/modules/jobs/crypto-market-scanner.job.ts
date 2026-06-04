@@ -31,6 +31,11 @@ interface MarketRuntimeData {
 }
 
 const DUPLICATE_SIGNAL_WINDOW_MS = 30 * 1000;
+const MATERIAL_PREDICTION_HEARTBEAT_MS = 60 * 1000;
+const WAIT_SNAPSHOT_MIN_INTERVAL_MS = 30 * 1000;
+const SNAPSHOT_PRICE_CHANGE_THRESHOLD = 0.03;
+const EDGE_BUCKET_SIZE = 0.02;
+const ENTRY_PRICE_BUCKET_SIZE = 0.05;
 const MAX_MARKETS_PER_SCAN = 25;
 const MAX_HEAVY_MARKETS_PER_SCAN = 12;
 const HEAVY_DISCOVERY_SCAN_INTERVAL_MS = 60 * 1000;
@@ -135,25 +140,40 @@ export class CryptoMarketScannerJob {
     const runtimeData = await this.loadRuntimeData(normalizedMarket);
     const market = await this.resolveUpDownTargetPrice(savedMarket.id, normalizedMarket, runtimeData);
     const marketKey = this.getMarketKey(market);
-    const shouldSkipSignal = await this.hasRecentSignal(savedMarket.id, marketKey);
     const signalInput = this.toSignalInput(savedMarket.id, market, runtimeData);
-    const signal = shouldSkipSignal
-      ? createStaticSignal("crypto-market-scanner-duplicate", "Skipped duplicate signal within 30 seconds.", "WAIT")
-      : await this.signalEngine.generateSignal(signalInput);
+    const signal = await this.signalEngine.generateSignal(signalInput);
     const riskAssessment = await this.riskService.evaluateSignal(signalInput, signal, savedMarket.category);
     const shouldStoreFullOrderbook = signal.recommendation !== "AVOID";
-    const snapshot = await this.createSnapshot(
-      savedMarket.id,
-      market,
-      runtimeData,
-      shouldStoreFullOrderbook
-    );
     let simulationText = "No simulation created.";
     const hasOperationalStrategy = this.hasOperationalStrategy(market);
 
     if (!hasOperationalStrategy) {
       simulationText = `Market stored without prediction: ${market.marketType} has no enabled strategy.`;
-    } else if (!shouldSkipSignal) {
+    } else {
+      const shouldStorePrediction = await this.shouldStorePrediction(savedMarket.id, signal);
+      const shouldStoreSnapshot = await this.shouldStoreSnapshot(savedMarket.id, runtimeData, signal, shouldStorePrediction);
+
+      if (!shouldStoreSnapshot) {
+        simulationText = "Observation skipped; repeated WAIT without material price change.";
+        this.printMarketResult(market, runtimeData, signal, riskAssessment, simulationText);
+        return;
+      }
+
+      const snapshot = await this.createSnapshot(
+        savedMarket.id,
+        market,
+        runtimeData,
+        shouldStoreFullOrderbook
+      );
+
+      if (!shouldStorePrediction) {
+        simulationText = this.isTechnicalWaitWithoutEntry(signal)
+          ? "Snapshot stored; technical WAIT not saved as BotPrediction."
+          : "Snapshot stored; prediction unchanged since last material signal.";
+        this.printMarketResult(market, runtimeData, signal, riskAssessment, simulationText);
+        return;
+      }
+
       const prediction = await this.createPrediction(savedMarket.id, snapshot.id, market, signalInput, signal);
       this.lastSignalByMarket.set(marketKey, Date.now());
 
@@ -173,8 +193,6 @@ export class CryptoMarketScannerJob {
       } else if (signal.recommendation === "WAIT") {
         simulationText = "Prediction stored, recommendation is WAIT.";
       }
-    } else {
-      simulationText = "Duplicate signal skipped; market and snapshot were still updated.";
     }
 
     this.printMarketResult(market, runtimeData, signal, riskAssessment, simulationText);
@@ -494,6 +512,107 @@ export class CryptoMarketScannerJob {
     return true;
   }
 
+  private async shouldStorePrediction(marketId: string, signal: SignalResult): Promise<boolean> {
+    if (this.isTechnicalWaitWithoutEntry(signal)) {
+      return false;
+    }
+
+    const previousPrediction = await prisma.botPrediction.findFirst({
+      where: {
+        marketId
+      },
+      select: {
+        predictedOutcome: true,
+        recommendation: true,
+        entryPrice: true,
+        edge: true,
+        createdAt: true
+      },
+      orderBy: {
+        createdAt: "desc"
+      }
+    });
+
+    if (!previousPrediction) {
+      return true;
+    }
+
+    if (Date.now() - previousPrediction.createdAt.getTime() >= MATERIAL_PREDICTION_HEARTBEAT_MS) {
+      return true;
+    }
+
+    if (previousPrediction.predictedOutcome !== signal.predictedOutcome) {
+      return true;
+    }
+
+    if (previousPrediction.recommendation !== signal.recommendation) {
+      return true;
+    }
+
+    const previousEntryPrice = Number(previousPrediction.entryPrice);
+    const previousEdge = Number(previousPrediction.edge);
+
+    return (
+      bucket(previousEntryPrice, ENTRY_PRICE_BUCKET_SIZE) !== bucket(signal.entryPrice, ENTRY_PRICE_BUCKET_SIZE) ||
+      bucket(previousEdge, EDGE_BUCKET_SIZE) !== bucket(signal.edge, EDGE_BUCKET_SIZE)
+    );
+  }
+
+  private async shouldStoreSnapshot(
+    marketId: string,
+    runtimeData: MarketRuntimeData,
+    signal: SignalResult,
+    willStorePrediction: boolean
+  ): Promise<boolean> {
+    if (willStorePrediction || signal.recommendation === "ENTER_SMALL" || signal.recommendation === "ENTER_MODERATE") {
+      return true;
+    }
+
+    const previousSnapshot = await prisma.marketSnapshot.findFirst({
+      where: {
+        marketId
+      },
+      select: {
+        createdAt: true,
+        upPrice: true,
+        downPrice: true,
+        currentAssetPrice: true
+      },
+      orderBy: {
+        createdAt: "desc"
+      }
+    });
+
+    if (!previousSnapshot) {
+      return true;
+    }
+
+    if (Date.now() - previousSnapshot.createdAt.getTime() < WAIT_SNAPSHOT_MIN_INTERVAL_MS) {
+      return this.hasMaterialSnapshotChange(previousSnapshot, runtimeData);
+    }
+
+    return true;
+  }
+
+  private hasMaterialSnapshotChange(
+    previousSnapshot: {
+      upPrice: Prisma.Decimal | null;
+      downPrice: Prisma.Decimal | null;
+      currentAssetPrice: Prisma.Decimal | null;
+    },
+    runtimeData: MarketRuntimeData
+  ): boolean {
+    return (
+      hasAbsoluteChange(toNumberOrNull(previousSnapshot.upPrice), runtimeData.upPrice, SNAPSHOT_PRICE_CHANGE_THRESHOLD) ||
+      hasAbsoluteChange(toNumberOrNull(previousSnapshot.downPrice), runtimeData.downPrice, SNAPSHOT_PRICE_CHANGE_THRESHOLD) ||
+      hasRelativeChange(toNumberOrNull(previousSnapshot.currentAssetPrice), runtimeData.currentAssetPrice, 0.001)
+    );
+  }
+
+  private isTechnicalWaitWithoutEntry(signal: SignalResult): boolean {
+    return signal.recommendation === "WAIT" && signal.entryPrice === 0;
+  }
+
   private getMarketKey(market: NormalizedCryptoMarket): string {
     return market.externalMarketId ?? market.slug ?? market.question;
   }
@@ -673,6 +792,52 @@ function toNullableDecimal(value: number | null): Prisma.Decimal | null {
 
 function round6(value: number): number {
   return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
+}
+
+function bucket(value: number, bucketSize: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.floor(value / bucketSize);
+}
+
+function hasAbsoluteChange(
+  previousValue: number | null,
+  currentValue: number | null,
+  threshold: number
+): boolean {
+  if (!Number.isFinite(previousValue) || currentValue === null || !Number.isFinite(currentValue)) {
+    return false;
+  }
+
+  return Math.abs((previousValue as number) - currentValue) >= threshold;
+}
+
+function hasRelativeChange(
+  previousValue: number | null,
+  currentValue: number | null,
+  threshold: number
+): boolean {
+  if (
+    !Number.isFinite(previousValue) ||
+    previousValue === 0 ||
+    currentValue === null ||
+    !Number.isFinite(currentValue)
+  ) {
+    return false;
+  }
+
+  return Math.abs(((previousValue as number) - currentValue) / (previousValue as number)) >= threshold;
+}
+
+function toNumberOrNull(value: Prisma.Decimal | null): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
 }
 
 function confidenceToScore(confidence: SignalResult["confidence"]): number {

@@ -6,6 +6,9 @@ vi.mock("../../database/client", () => ({
   prisma: {
     botPrediction: {
       findFirst: vi.fn()
+    },
+    simulatedTrade: {
+      findFirst: vi.fn()
     }
   }
 }));
@@ -28,7 +31,9 @@ function makeRiskInput(overrides = {}) {
 
 describe("RiskService", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.mocked(prisma.botPrediction.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.simulatedTrade.findFirst).mockResolvedValue(null);
   });
 
   it("blocks non crypto markets", async () => {
@@ -37,11 +42,30 @@ describe("RiskService", () => {
     expect(result.reason).toContain("no es CRYPTO");
   });
 
-  it("blocks duplicate recent signals", async () => {
+  it("blocks duplicate recent actionable signals", async () => {
     vi.mocked(prisma.botPrediction.findFirst).mockResolvedValue({ id: "p1" } as never);
-    const result = await service.evaluateSimulationRequest(makeRiskInput());
+    const result = await service.evaluateSimulationRequest(
+      makeRiskInput({ recommendation: "ENTER_SMALL", predictedOutcome: "UP" })
+    );
     expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("senal reciente");
+    expect(result.reason).toContain("senal operativa reciente");
+  });
+
+  it("does not block because of recent non actionable signals", async () => {
+    const result = await service.evaluateSimulationRequest(
+      makeRiskInput({ recommendation: "WAIT", predictedOutcome: "UP" })
+    );
+    expect(result.allowed).toBe(true);
+    expect(prisma.botPrediction.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("blocks existing pending simulated trade", async () => {
+    vi.mocked(prisma.simulatedTrade.findFirst).mockResolvedValue({ id: "t1" } as never);
+    const result = await service.evaluateSimulationRequest(
+      makeRiskInput({ recommendation: "ENTER_SMALL", predictedOutcome: "UP" })
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("trade simulado pendiente");
   });
 
   it("blocks secondsToClose below 20", async () => {

@@ -25,6 +25,8 @@ export interface RiskEvaluationInput {
   targetPrice?: number | null;
   currentAssetPrice?: number | null;
   predictionIdToExclude?: string;
+  recommendation?: string;
+  predictedOutcome?: string;
 }
 
 const RECENT_SIGNAL_WINDOW_MS = 5 * 60 * 1000;
@@ -45,7 +47,9 @@ export class RiskService {
       liquidity: input.liquidity,
       secondsToClose: input.secondsToClose,
       targetPrice: input.targetPrice,
-      currentAssetPrice: input.currentAssetPrice
+      currentAssetPrice: input.currentAssetPrice,
+      recommendation: signal.recommendation,
+      predictedOutcome: signal.predictedOutcome
     });
   }
 
@@ -90,10 +94,18 @@ export class RiskService {
       return staticAssessment;
     }
 
-    if (await this.hasRecentSignal(input.marketId, input.predictionIdToExclude)) {
+    if (await this.hasPendingTrade(input.marketId)) {
       return {
         allowed: false,
-        reason: "Ya existe senal reciente para el mismo mercado.",
+        reason: "Ya existe trade simulado pendiente para el mismo mercado.",
+        riskLevel: "MEDIUM"
+      };
+    }
+
+    if (await this.hasRecentActionableSignal(input)) {
+      return {
+        allowed: false,
+        reason: "Ya existe senal operativa reciente para el mismo mercado.",
         riskLevel: "MEDIUM"
       };
     }
@@ -189,19 +201,30 @@ export class RiskService {
     );
   }
 
-  private async hasRecentSignal(marketId: string, predictionIdToExclude?: string): Promise<boolean> {
+  private async hasRecentActionableSignal(input: RiskEvaluationInput): Promise<boolean> {
+    if (!isActionableRecommendation(input.recommendation)) {
+      return false;
+    }
+
     const recentSince = new Date(Date.now() - RECENT_SIGNAL_WINDOW_MS);
     const where: Prisma.BotPredictionWhereInput = {
-      marketId,
+      marketId: input.marketId,
       createdAt: {
         gte: recentSince
+      },
+      recommendation: {
+        in: ["ENTER_SMALL", "ENTER_MODERATE"]
       }
     };
 
-    if (predictionIdToExclude) {
+    if (input.predictionIdToExclude) {
       where.id = {
-        not: predictionIdToExclude
+        not: input.predictionIdToExclude
       };
+    }
+
+    if (input.predictedOutcome) {
+      where.predictedOutcome = input.predictedOutcome;
     }
 
     const recentSignal = await prisma.botPrediction.findFirst({
@@ -214,6 +237,20 @@ export class RiskService {
     return recentSignal !== null;
   }
 
+  private async hasPendingTrade(marketId: string): Promise<boolean> {
+    const pendingTrade = await prisma.simulatedTrade.findFirst({
+      where: {
+        marketId,
+        status: "PENDING"
+      },
+      select: {
+        id: true
+      }
+    });
+
+    return pendingTrade !== null;
+  }
+
   private inferAllowedRiskLevel(spread: number | null, liquidity: number | null): RiskLevel {
     const spreadRatio = spread === null || config.maxSpread === 0 ? 0 : spread / config.maxSpread;
     const liquidityRatio = liquidity === null || config.minLiquidity === 0 ? 2 : liquidity / config.minLiquidity;
@@ -224,4 +261,8 @@ export class RiskService {
 
     return "LOW";
   }
+}
+
+function isActionableRecommendation(recommendation?: string): boolean {
+  return recommendation === "ENTER_SMALL" || recommendation === "ENTER_MODERATE";
 }
