@@ -962,6 +962,11 @@ function parseJsonRecord(value: string): Record<string, unknown> {
 
 function getTargetPriceSource(rawData: string): string | null {
   const record = parseJsonRecord(rawData);
+  const topLevelSource = record.targetPriceSource;
+  if (typeof topLevelSource === "string") {
+    return topLevelSource;
+  }
+
   const derivedTargetPrice = record.derivedTargetPrice;
 
   if (derivedTargetPrice && typeof derivedTargetPrice === "object") {
@@ -980,6 +985,10 @@ function getTargetPriceSource(rawData: string): string | null {
 
 function getTargetPriceTrustedForLearning(rawData: string): boolean {
   const record = parseJsonRecord(rawData);
+  if (record.targetPriceTrustedForLearning === true) {
+    return true;
+  }
+
   const derivedTargetPrice = record.derivedTargetPrice;
 
   if (derivedTargetPrice && typeof derivedTargetPrice === "object") {
