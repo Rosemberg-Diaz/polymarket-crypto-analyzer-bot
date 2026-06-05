@@ -155,4 +155,27 @@ describe("CryptoUpDownShortTermStrategy", () => {
     expect(result.recommendation).toBe("ENTER_SMALL");
     expect(result.features.entryRule).toBe("ENTER_SMALL_LIGHT");
   });
+
+  it("waits on standard DOWN setups with high entry price 60-119 seconds before close", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        currentAssetPrice: 99.5,
+        targetPrice: 100,
+        upPrice: 0.19,
+        downPrice: 0.8,
+        yesPrice: 0.19,
+        noPrice: 0.8,
+        secondsToClose: 90,
+        momentumLast30s: null,
+        momentumLast60s: null,
+        momentumLast120s: null,
+        volatilityLast60s: null,
+        volatilityLast120s: null
+      })
+    );
+
+    expect(result.predictedOutcome).toBe("DOWN");
+    expect(result.recommendation).toBe("WAIT");
+    expect(result.features.entryRule).toBe("NONE");
+  });
 });

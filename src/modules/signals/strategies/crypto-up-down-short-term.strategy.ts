@@ -347,6 +347,10 @@ function decideRecommendation(params: {
     };
   }
 
+  if (isStandardDownReversalRisk(params)) {
+    return { recommendation: "WAIT", entryRule: "NONE" };
+  }
+
   if (params.edge >= 0.08) {
     return { recommendation: "ENTER_MODERATE", entryRule: "ENTER_MODERATE_STANDARD" };
   }
@@ -367,6 +371,19 @@ function decideRecommendation(params: {
     recommendation: params.strongDistance && params.secondsToClose < 60 ? "WAIT" : "AVOID",
     entryRule: "NONE"
   };
+}
+
+function isStandardDownReversalRisk(params: {
+  predictedOutcome: PredictedOutcome;
+  secondsToClose: number;
+  entryPrice: number;
+}): boolean {
+  return (
+    params.predictedOutcome === "DOWN" &&
+    params.secondsToClose >= 60 &&
+    params.secondsToClose <= 119 &&
+    params.entryPrice >= 0.75
+  );
 }
 
 function isLightEntrySetup(params: {
