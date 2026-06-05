@@ -32,11 +32,15 @@ interface LearningStatUpdateInput {
 }
 
 const PENDING_LIMIT = 50;
+const OFFICIAL_RESOLUTION_DELAY_MS = 60 * 1000;
+const UNRESOLVED_WARNING_INTERVAL_MS = 5 * 60 * 1000;
 const LOCAL_UP_DOWN_FALLBACK_DELAY_MS = 30 * 1000;
 const FINAL_PRICE_WIN_THRESHOLD = 0.98;
 const FINAL_PRICE_LOSS_THRESHOLD = 0.02;
 
 export class ResolveSimulatedTradesJob {
+  private readonly lastUnresolvedWarningByTrade = new Map<string, number>();
+
   constructor(
     private readonly logger: LoggerService,
     private readonly polymarketClient = new PolymarketClient(),
@@ -108,6 +112,18 @@ export class ResolveSimulatedTradesJob {
       return;
     }
 
+    if (this.shouldDelayResolutionAttempt(trade)) {
+      this.logger.debug("Skipping simulated trade resolution until official result delay has passed.", {
+        tradeId: trade.id,
+        slug,
+        marketEndDate: trade.market.endDate?.toISOString() ?? null,
+        waitUntil: trade.market.endDate
+          ? new Date(trade.market.endDate.getTime() + OFFICIAL_RESOLUTION_DELAY_MS).toISOString()
+          : null
+      });
+      return;
+    }
+
     const market = await this.polymarketClient.getMarketBySlug(slug);
     if (!market) {
       this.logger.warn("Cannot resolve simulated trade because Polymarket market was not found.", {
@@ -119,7 +135,7 @@ export class ResolveSimulatedTradesJob {
 
     const winningOutcome = await this.resolveWinningOutcome(trade, market);
     if (!winningOutcome) {
-      this.logger.warn("Could not determine winning outcome. Simulated trade remains pending.", {
+      this.logUnresolvedTradeWarning(trade, {
         tradeId: trade.id,
         slug,
         closed: market.closed,
@@ -178,6 +194,30 @@ export class ResolveSimulatedTradesJob {
       profit: calculation.profit,
       roi: calculation.roi
     });
+  }
+
+  private shouldDelayResolutionAttempt(trade: Awaited<ReturnType<typeof this.loadTradeShape>>): boolean {
+    if (!trade.market.endDate) {
+      return false;
+    }
+
+    return Date.now() < trade.market.endDate.getTime() + OFFICIAL_RESOLUTION_DELAY_MS;
+  }
+
+  private logUnresolvedTradeWarning(
+    trade: Awaited<ReturnType<typeof this.loadTradeShape>>,
+    context: Record<string, unknown>
+  ): void {
+    const lastWarnedAt = this.lastUnresolvedWarningByTrade.get(trade.id) ?? 0;
+    const now = Date.now();
+
+    if (now - lastWarnedAt < UNRESOLVED_WARNING_INTERVAL_MS) {
+      this.logger.debug("Could not determine winning outcome yet; simulated trade remains pending.", context);
+      return;
+    }
+
+    this.lastUnresolvedWarningByTrade.set(trade.id, now);
+    this.logger.warn("Could not determine winning outcome. Simulated trade remains pending.", context);
   }
 
   private async resolveWinningOutcome(

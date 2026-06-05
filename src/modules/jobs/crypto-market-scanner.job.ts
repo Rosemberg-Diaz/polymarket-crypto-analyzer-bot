@@ -42,6 +42,7 @@ const MAX_HEAVY_MARKETS_PER_SCAN = 12;
 const HEAVY_DISCOVERY_SCAN_INTERVAL_MS = 60 * 1000;
 const UP_DOWN_TARGET_CAPTURE_WINDOW_MS = 60 * 1000;
 const UP_DOWN_5M_WINDOW_MS = 5 * 60 * 1000;
+const MIN_SECONDS_TO_CLOSE_FOR_OPERATIONAL_SIGNAL = 20;
 const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL"]);
 
 export class CryptoMarketScannerJob {
@@ -153,7 +154,9 @@ export class CryptoMarketScannerJob {
     if (!hasOperationalStrategy) {
       simulationText = `Market stored without prediction: ${market.marketType} has no enabled strategy.`;
     } else {
-      const shouldStorePrediction = await this.shouldStorePrediction(savedMarket.id, signal);
+      const shouldStorePrediction =
+        !this.isTooLateForOperationalPrediction(signal, runtimeData) &&
+        await this.shouldStorePrediction(savedMarket.id, signal);
       const shouldStoreSnapshot = await this.shouldStoreSnapshot(savedMarket.id, runtimeData, signal, shouldStorePrediction);
 
       if (!shouldStoreSnapshot) {
@@ -170,9 +173,7 @@ export class CryptoMarketScannerJob {
       );
 
       if (!shouldStorePrediction) {
-        simulationText = this.isTechnicalWaitWithoutEntry(signal)
-          ? "Snapshot stored; technical WAIT not saved as BotPrediction."
-          : "Snapshot stored; prediction unchanged since last material signal.";
+        simulationText = this.getSkippedPredictionReason(signal, runtimeData);
         this.printMarketResult(market, runtimeData, signal, riskAssessment, simulationText);
         return;
       }
@@ -646,6 +647,26 @@ export class CryptoMarketScannerJob {
 
   private isTechnicalWaitWithoutEntry(signal: SignalResult): boolean {
     return signal.recommendation === "WAIT" && signal.entryPrice === 0;
+  }
+
+  private isTooLateForOperationalPrediction(signal: SignalResult, runtimeData: MarketRuntimeData): boolean {
+    return (
+      (signal.recommendation === "ENTER_SMALL" || signal.recommendation === "ENTER_MODERATE") &&
+      runtimeData.secondsToClose !== null &&
+      runtimeData.secondsToClose < MIN_SECONDS_TO_CLOSE_FOR_OPERATIONAL_SIGNAL
+    );
+  }
+
+  private getSkippedPredictionReason(signal: SignalResult, runtimeData: MarketRuntimeData): string {
+    if (this.isTechnicalWaitWithoutEntry(signal)) {
+      return "Snapshot stored; technical WAIT not saved as BotPrediction.";
+    }
+
+    if (this.isTooLateForOperationalPrediction(signal, runtimeData)) {
+      return "Snapshot stored; operational signal skipped because market is too close to close.";
+    }
+
+    return "Snapshot stored; prediction unchanged since last material signal.";
   }
 
   private getMarketKey(market: NormalizedCryptoMarket): string {
