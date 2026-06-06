@@ -178,4 +178,52 @@ describe("CryptoUpDownShortTermStrategy", () => {
     expect(result.recommendation).toBe("WAIT");
     expect(result.features.entryRule).toBe("NONE");
   });
+
+  it("waits on moderate setups when entry is below 0.65 with more than 180 seconds remaining", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        assetSymbol: "SOL",
+        currentAssetPrice: 101.4,
+        targetPrice: 100,
+        upPrice: 0.49,
+        downPrice: 0.5,
+        yesPrice: 0.49,
+        noPrice: 0.5,
+        secondsToClose: 330,
+        momentumLast30s: 0.06,
+        momentumLast60s: 0.05,
+        momentumLast120s: 0.04,
+        volatilityLast60s: 0,
+        volatilityLast120s: 0
+      })
+    );
+
+    expect(result.edge).toBeGreaterThanOrEqual(0.08);
+    expect(result.recommendation).toBe("WAIT");
+    expect(result.features.entryRule).toBe("NONE");
+  });
+
+  it("waits on ETH moderate setups below 0.70 entry price", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        assetSymbol: "ETH",
+        currentAssetPrice: 101.4,
+        targetPrice: 100,
+        upPrice: 0.66,
+        downPrice: 0.33,
+        yesPrice: 0.66,
+        noPrice: 0.33,
+        secondsToClose: 170,
+        momentumLast30s: 0.06,
+        momentumLast60s: 0.05,
+        momentumLast120s: 0.04,
+        volatilityLast60s: 0,
+        volatilityLast120s: 0
+      })
+    );
+
+    expect(result.edge).toBeGreaterThanOrEqual(0.08);
+    expect(result.recommendation).toBe("WAIT");
+    expect(result.features.entryRule).toBe("NONE");
+  });
 });

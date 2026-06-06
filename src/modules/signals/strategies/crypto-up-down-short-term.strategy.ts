@@ -111,6 +111,7 @@ export class CryptoUpDownShortTermStrategy {
       spread: input.spread,
       distancePercent,
       predictedOutcome,
+      assetSymbol: input.assetSymbol,
       targetPriceTrustedForLearning: input.targetPriceTrustedForLearning === true
     });
     const recommendation = recommendationDecision.recommendation;
@@ -334,6 +335,7 @@ function decideRecommendation(params: {
   spread: number | null;
   distancePercent: number;
   predictedOutcome: PredictedOutcome;
+  assetSymbol: string;
   targetPriceTrustedForLearning: boolean;
 }): RecommendationDecision {
   if (params.entryPrice > 0.82 && !(params.secondsToClose < 45 && params.strongDistance)) {
@@ -352,6 +354,10 @@ function decideRecommendation(params: {
   }
 
   if (params.edge >= 0.08) {
+    if (isModerateEntryRisk(params)) {
+      return { recommendation: "WAIT", entryRule: "NONE" };
+    }
+
     return { recommendation: "ENTER_MODERATE", entryRule: "ENTER_MODERATE_STANDARD" };
   }
 
@@ -384,6 +390,18 @@ function isStandardDownReversalRisk(params: {
     params.secondsToClose <= 119 &&
     params.entryPrice >= 0.75
   );
+}
+
+function isModerateEntryRisk(params: {
+  assetSymbol: string;
+  secondsToClose: number;
+  entryPrice: number;
+}): boolean {
+  if (params.secondsToClose > 180 && params.entryPrice < 0.65) {
+    return true;
+  }
+
+  return params.assetSymbol === "ETH" && params.entryPrice < 0.7;
 }
 
 function isLightEntrySetup(params: {
