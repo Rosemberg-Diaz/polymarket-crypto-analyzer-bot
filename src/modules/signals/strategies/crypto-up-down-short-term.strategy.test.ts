@@ -88,7 +88,7 @@ describe("CryptoUpDownShortTermStrategy", () => {
     expect(result.predictedOutcome).toBe("UP");
   });
 
-  it("marks conditional light entries separately from standard small entries", () => {
+  it("keeps BTC conditional light entries in observation mode", () => {
     const result = strategy.evaluate(
       makeInput({
         currentAssetPrice: 100.22,
@@ -107,9 +107,9 @@ describe("CryptoUpDownShortTermStrategy", () => {
       })
     );
 
-    expect(result.recommendation).toBe("ENTER_SMALL");
-    expect(result.features.entryRule).toBe("ENTER_SMALL_LIGHT");
-    expect(result.reason).toContain("Regla de entrada: ENTER_SMALL_LIGHT");
+    expect(result.recommendation).toBe("WAIT");
+    expect(result.features.entryRule).toBe("OBSERVE_SMALL_LIGHT");
+    expect(result.reason).toContain("Regla de entrada: OBSERVE_SMALL_LIGHT");
   });
 
   it("does not use light entries when target is not official", () => {
@@ -135,9 +135,10 @@ describe("CryptoUpDownShortTermStrategy", () => {
     expect(result.features.entryRule).toBe("NONE");
   });
 
-  it("allows light entries with lower edge and entry price up to 0.82", () => {
+  it("keeps SOL light setups in observation mode", () => {
     const result = strategy.evaluate(
       makeInput({
+        assetSymbol: "SOL",
         currentAssetPrice: 100.13,
         targetPrice: 100,
         upPrice: 0.81,
@@ -152,8 +153,8 @@ describe("CryptoUpDownShortTermStrategy", () => {
       })
     );
 
-    expect(result.recommendation).toBe("ENTER_SMALL");
-    expect(result.features.entryRule).toBe("ENTER_SMALL_LIGHT");
+    expect(result.recommendation).toBe("WAIT");
+    expect(result.features.entryRule).toBe("OBSERVE_SMALL_LIGHT");
   });
 
   it("waits on standard DOWN setups with high entry price 60-119 seconds before close", () => {
@@ -177,6 +178,74 @@ describe("CryptoUpDownShortTermStrategy", () => {
     expect(result.predictedOutcome).toBe("DOWN");
     expect(result.recommendation).toBe("WAIT");
     expect(result.features.entryRule).toBe("NONE");
+  });
+
+  it("allows standard setups with edge >= 3% even in late window", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        currentAssetPrice: 100.25,
+        targetPrice: 100,
+        upPrice: 0.68,
+        downPrice: 0.31,
+        yesPrice: 0.68,
+        noPrice: 0.31,
+        secondsToClose: 35,
+        momentumLast30s: null,
+        momentumLast60s: null,
+        momentumLast120s: null,
+        volatilityLast60s: null,
+        volatilityLast120s: null
+      })
+    );
+
+    expect(result.edge).toBeGreaterThanOrEqual(0.03);
+    expect(result.recommendation).toBe("ENTER_SMALL");
+    expect(result.features.entryRule).toBe("ENTER_SMALL_STANDARD");
+  });
+
+  it("allows late higher-priced standard setups only when edge and distance are strong", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        currentAssetPrice: 100.4,
+        targetPrice: 100,
+        upPrice: 0.81,
+        downPrice: 0.18,
+        yesPrice: 0.81,
+        noPrice: 0.18,
+        secondsToClose: 35,
+        momentumLast30s: null,
+        momentumLast60s: null,
+        momentumLast120s: null,
+        volatilityLast60s: 0.02,
+        volatilityLast120s: 0.02
+      })
+    );
+
+    expect(result.edge).toBeGreaterThanOrEqual(0.06);
+    expect(result.recommendation).toBe("ENTER_SMALL");
+    expect(result.features.entryRule).toBe("ENTER_SMALL_STANDARD");
+  });
+
+  it("allows standard setups with edge >= 3% regardless of timing", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        currentAssetPrice: 100.3,
+        targetPrice: 100,
+        upPrice: 0.7,
+        downPrice: 0.29,
+        yesPrice: 0.7,
+        noPrice: 0.29,
+        secondsToClose: 100,
+        momentumLast30s: null,
+        momentumLast60s: null,
+        momentumLast120s: null,
+        volatilityLast60s: null,
+        volatilityLast120s: null
+      })
+    );
+
+    expect(result.recommendation).toBe("ENTER_SMALL");
+    expect(result.features.entryRule).toBe("ENTER_SMALL_STANDARD");
   });
 
   it("waits on moderate setups when entry is below 0.65 with more than 180 seconds remaining", () => {
@@ -225,5 +294,28 @@ describe("CryptoUpDownShortTermStrategy", () => {
     expect(result.edge).toBeGreaterThanOrEqual(0.08);
     expect(result.recommendation).toBe("WAIT");
     expect(result.features.entryRule).toBe("NONE");
+  });
+
+  it("allows eligible moderate setups as real trades", () => {
+    const result = strategy.evaluate(
+      makeInput({
+        assetSymbol: "BTC",
+        currentAssetPrice: 101.5,
+        targetPrice: 100,
+        upPrice: 0.7,
+        downPrice: 0.29,
+        secondsToClose: 120,
+        momentumLast30s: 0.06,
+        momentumLast60s: 0.05,
+        momentumLast120s: 0.04,
+        volatilityLast60s: 0,
+        volatilityLast120s: 0
+      })
+    );
+
+    expect(result.edge).toBeGreaterThanOrEqual(0.08);
+    expect(result.recommendation).toBe("ENTER_MODERATE");
+    expect(result.features.entryRule).toBe("ENTER_MODERATE_STANDARD");
+    expect(result.reason).toContain("Regla de entrada: ENTER_MODERATE_STANDARD");
   });
 });

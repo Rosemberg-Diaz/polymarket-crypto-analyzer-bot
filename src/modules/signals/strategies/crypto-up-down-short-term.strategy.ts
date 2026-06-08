@@ -25,7 +25,13 @@ interface StrategyFeatures extends Record<string, unknown> {
   highEntryPrice: boolean;
   targetPriceSource: string | null;
   targetPriceTrustedForLearning: boolean;
-  entryRule: "NONE" | "ENTER_SMALL_STANDARD" | "ENTER_SMALL_LIGHT" | "ENTER_MODERATE_STANDARD";
+  entryRule:
+    | "NONE"
+    | "ENTER_SMALL_STANDARD"
+    | "ENTER_SMALL_LIGHT"
+    | "ENTER_MODERATE_STANDARD"
+    | "OBSERVE_SMALL_LIGHT"
+    | "OBSERVE_MODERATE_STANDARD";
 }
 
 interface RecommendationDecision {
@@ -366,7 +372,11 @@ function decideRecommendation(params: {
   }
 
   if (isLightEntrySetup(params)) {
-    return { recommendation: "ENTER_SMALL", entryRule: "ENTER_SMALL_LIGHT" };
+    if (isOperationalLightEntrySetup(params)) {
+      return { recommendation: "ENTER_SMALL", entryRule: "ENTER_SMALL_LIGHT" };
+    }
+
+    return { recommendation: "WAIT", entryRule: "OBSERVE_SMALL_LIGHT" };
   }
 
   if (params.edge > 0) {
@@ -427,6 +437,12 @@ function isLightEntrySetup(params: {
     params.spread <= 0.04 &&
     favorableDistance >= 0.0005
   );
+}
+
+function isOperationalLightEntrySetup(_params: {
+  assetSymbol: string;
+}): boolean {
+  return false;
 }
 
 function decideConfidence(

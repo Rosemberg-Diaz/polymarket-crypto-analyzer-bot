@@ -64,6 +64,7 @@ export class LearningService {
     });
 
     const similarTrades = resolvedTrades.filter((trade) =>
+      isEligibleHistoricalTrade(trade.prediction.features) &&
       isSimilarTrade(features, {
         entryPrice: Number(trade.entryPrice),
         secondsToClose: trade.prediction.snapshot.secondsToClose,
@@ -101,6 +102,30 @@ export class LearningService {
       confidenceAdjustment,
       historicalSummary: buildHistoricalSummary(totalSimilarCases, winRate, totalProfit)
     };
+  }
+}
+
+function isEligibleHistoricalTrade(featuresJson: string | null): boolean {
+  if (!featuresJson) {
+    return false;
+  }
+
+  try {
+    const features = JSON.parse(featuresJson) as Record<string, unknown>;
+    const source = features.targetPriceSource;
+    const trusted = features.targetPriceTrustedForLearning;
+    const distancePercent = Number(features.distanceToTargetPercent);
+
+    return (
+      trusted === true &&
+      ["POLYMARKET_CRYPTO_PRICE_API", "POLYMARKET_RTDS_CHAINLINK", "POLYMARKET_UMA_ANCILLARY"].includes(
+        typeof source === "string" ? source : ""
+      ) &&
+      Number.isFinite(distancePercent) &&
+      Math.abs(distancePercent) <= 0.1
+    );
+  } catch {
+    return false;
   }
 }
 

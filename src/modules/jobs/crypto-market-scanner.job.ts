@@ -8,13 +8,17 @@ import {
 import { LoggerService } from "../logger/logger.service";
 import { CryptoPriceService } from "../market-data/crypto-price.service";
 import { FeatureBuilderService } from "../market-data/feature-builder.service";
-import { OfficialTargetResolverService } from "../market-data/official-target-resolver.service";
+import {
+  isTrustedUpDownTargetForStorage,
+  OfficialTargetResolverService
+} from "../market-data/official-target-resolver.service";
 import { PolymarketClient } from "../polymarket/polymarket.client";
 import { PolymarketService } from "../polymarket/polymarket.service";
 import { PolymarketOrderBook } from "../polymarket/polymarket.types";
 import { RiskAssessment, RiskService } from "../risk/risk.service";
 import { SignalEngine } from "../signals/signal.engine";
 import { SignalInput, SignalResult } from "../signals/signal.types";
+import { ObservationEvaluationService } from "../simulations/observation-evaluation.service";
 import { SimulationService } from "../simulations/simulation.service";
 
 interface MarketRuntimeData {
@@ -51,6 +55,7 @@ export class CryptoMarketScannerJob {
   private readonly signalEngine = new SignalEngine();
   private readonly riskService = new RiskService();
   private readonly simulationService = new SimulationService(this.riskService);
+  private readonly observationEvaluationService = new ObservationEvaluationService();
   private readonly featureBuilderService = new FeatureBuilderService();
   private readonly officialTargetResolverService: OfficialTargetResolverService;
   private readonly cryptoPriceService: CryptoPriceService;
@@ -67,11 +72,18 @@ export class CryptoMarketScannerJob {
     this.logger.info("Crypto market scanner started.");
 
     const fastMarkets = await this.polymarketService.getFastCryptoUpDown5mMarkets();
+    const fastQueue = this.buildScanQueue(fastMarkets, []);
+    const processedMarketKeys = new Set(fastQueue.map((market) => this.getMarketKey(market)));
+    let processedMarkets = await this.processMarkets(fastQueue);
     let heavyMarkets: NormalizedCryptoMarket[] = [];
 
     if (Date.now() - this.lastHeavyDiscoveryAt >= HEAVY_DISCOVERY_SCAN_INTERVAL_MS) {
-      heavyMarkets = await this.polymarketService.getActiveCryptoMarkets({ limit: 200 });
-      this.lastHeavyDiscoveryAt = Date.now();
+      try {
+        heavyMarkets = await this.polymarketService.getActiveCryptoMarkets({ limit: 200 });
+        this.lastHeavyDiscoveryAt = Date.now();
+      } catch (error) {
+        this.logger.error("Heavy Polymarket discovery failed; fast scanner will continue.", error);
+      }
     } else {
       this.logger.debug("Skipping heavy Polymarket discovery; fast Up/Down scan only.", {
         nextHeavyDiscoveryInSeconds: Math.ceil(
@@ -80,14 +92,24 @@ export class CryptoMarketScannerJob {
       });
     }
 
-    const prioritizedMarkets = this.buildScanQueue(fastMarkets, heavyMarkets);
+    const heavyQueue = this.buildScanQueue([], heavyMarkets)
+      .filter((market) => !processedMarketKeys.has(this.getMarketKey(market)));
+    processedMarkets += await this.processMarkets(heavyQueue);
 
-    if (prioritizedMarkets.length === 0) {
+    if (processedMarkets === 0) {
       this.logger.warn("No active crypto markets found from Polymarket.");
       return;
     }
 
-    for (const market of prioritizedMarkets) {
+    this.logger.info("Crypto market scanner finished.", {
+      fastMarkets: fastMarkets.length,
+      heavyMarkets: heavyMarkets.length,
+      processedMarkets
+    });
+  }
+
+  private async processMarkets(markets: NormalizedCryptoMarket[]): Promise<number> {
+    for (const market of markets) {
       try {
         await this.processMarket(market);
       } catch (error) {
@@ -99,11 +121,7 @@ export class CryptoMarketScannerJob {
       }
     }
 
-    this.logger.info("Crypto market scanner finished.", {
-      fastMarkets: fastMarkets.length,
-      heavyMarkets: heavyMarkets.length,
-      processedMarkets: prioritizedMarkets.length
-    });
+    return markets.length;
   }
 
   private buildScanQueue(
@@ -180,10 +198,26 @@ export class CryptoMarketScannerJob {
 
       const prediction = await this.createPrediction(savedMarket.id, snapshot.id, market, signalInput, signal);
       this.lastSignalByMarket.set(marketKey, Date.now());
+      const entryRule = this.getEntryRule(signal);
 
-      if (
+      if (this.isObservationRule(entryRule) && riskAssessment.allowed) {
+        const observation = await this.observationEvaluationService.createPendingObservation(
+          prediction.id,
+          savedMarket.id,
+          entryRule,
+          config.simulatedStakeUsd,
+          signal.entryPrice
+        );
+        simulationText =
+          `Shadow observation ${observation.id}, hypothetical stake $${config.simulatedStakeUsd}, ` +
+          `shares ${observation.shares.toString()}.`;
+      } else if (this.isObservationRule(entryRule)) {
+        simulationText =
+          `Shadow observation blocked by risk: ${riskAssessment.reason} (${riskAssessment.riskLevel}).`;
+      } else if (
         riskAssessment.allowed &&
-        (signal.recommendation === "ENTER_SMALL" || signal.recommendation === "ENTER_MODERATE")
+        (signal.recommendation === "ENTER_SMALL" || signal.recommendation === "ENTER_MODERATE") &&
+        this.hasIdentifiedEntryRule(signal)
       ) {
         const trade = await this.simulationService.createPendingSimulation(
           prediction.id,
@@ -194,6 +228,11 @@ export class CryptoMarketScannerJob {
         simulationText = `Pending simulated trade ${trade.id}, stake $${config.simulatedStakeUsd}, shares ${trade.shares.toString()}.`;
       } else if (!riskAssessment.allowed) {
         simulationText = `Risk blocked: ${riskAssessment.reason} (${riskAssessment.riskLevel}).`;
+      } else if (
+        (signal.recommendation === "ENTER_SMALL" || signal.recommendation === "ENTER_MODERATE") &&
+        !this.hasIdentifiedEntryRule(signal)
+      ) {
+        simulationText = "Simulation blocked: actionable signal has no identified entry rule.";
       } else if (signal.recommendation === "WAIT") {
         simulationText = "Prediction stored, recommendation is WAIT.";
       }
@@ -315,8 +354,30 @@ export class CryptoMarketScannerJob {
     market: NormalizedCryptoMarket,
     runtimeData: MarketRuntimeData
   ): Promise<NormalizedCryptoMarket> {
-    if (market.marketType !== "UP_DOWN_SHORT_TERM" || market.targetPrice !== null) {
+    if (market.marketType !== "UP_DOWN_SHORT_TERM") {
       return market;
+    }
+
+    if (
+      market.targetPrice !== null &&
+      isTrustedUpDownTargetForStorage(
+        market.targetPrice,
+        market.targetPriceSource,
+        runtimeData.currentAssetPrice
+      )
+    ) {
+      return market;
+    }
+
+    if (market.targetPrice !== null) {
+      this.logger.warn("Rejected untrusted or implausible mapped Up/Down target.", {
+        market: market.question,
+        slug: market.slug,
+        assetSymbol: market.assetSymbol,
+        targetPrice: market.targetPrice,
+        currentAssetPrice: runtimeData.currentAssetPrice,
+        source: market.targetPriceSource
+      });
     }
 
     const existingTarget = await prisma.marketSnapshot.findFirst({
@@ -337,16 +398,32 @@ export class CryptoMarketScannerJob {
 
     if (existingTarget?.targetPrice) {
       const targetSource = getTargetPriceSource(existingTarget.rawData ?? "") ?? "PREVIOUS_SNAPSHOT";
-      return withCapturedTarget(
-        market,
-        Number(existingTarget.targetPrice),
-        targetSource,
-        isTrustedTargetSource(targetSource)
-      );
+      const targetPrice = Number(existingTarget.targetPrice);
+
+      if (isTrustedUpDownTargetForStorage(targetPrice, targetSource, runtimeData.currentAssetPrice)) {
+        return withCapturedTarget(market, targetPrice, targetSource, true);
+      }
+
+      this.logger.warn("Rejected untrusted or implausible stored Up/Down target.", {
+        market: market.question,
+        slug: market.slug,
+        assetSymbol: market.assetSymbol,
+        targetPrice,
+        currentAssetPrice: runtimeData.currentAssetPrice,
+        source: targetSource
+      });
     }
 
     const officialTarget = await this.officialTargetResolverService.resolveOfficialTarget(market);
-    if (officialTarget.targetPrice !== null) {
+    if (
+      officialTarget.targetPrice !== null &&
+      officialTarget.trustedForLearning &&
+      isTrustedUpDownTargetForStorage(
+        officialTarget.targetPrice,
+        officialTarget.source,
+        runtimeData.currentAssetPrice
+      )
+    ) {
       this.logger.info("Captured Up/Down official target price.", {
         market: market.question,
         slug: market.slug,
@@ -363,6 +440,19 @@ export class CryptoMarketScannerJob {
         officialTarget.source,
         officialTarget.trustedForLearning
       );
+    }
+
+    if (officialTarget.targetPrice !== null) {
+      this.logger.warn("Rejected untrusted or implausible resolved Up/Down target.", {
+        market: market.question,
+        slug: market.slug,
+        assetSymbol: market.assetSymbol,
+        targetPrice: officialTarget.targetPrice,
+        currentAssetPrice: runtimeData.currentAssetPrice,
+        source: officialTarget.source,
+        trustedForLearning: officialTarget.trustedForLearning,
+        reason: officialTarget.reason
+      });
     }
 
     const windowStart = inferUpDownWindowStart(market);
@@ -390,6 +480,10 @@ export class CryptoMarketScannerJob {
 
     return {
       ...market,
+      targetPrice: null,
+      targetPriceSource: "UNKNOWN",
+      targetPriceTrustedForLearning: false,
+      isOperable: false,
       nonOperableReason:
         windowStart === null
           ? "Cannot infer Up/Down window start for target capture."
@@ -549,7 +643,7 @@ export class CryptoMarketScannerJob {
   }
 
   private async shouldStorePrediction(marketId: string, signal: SignalResult): Promise<boolean> {
-    if (this.isTechnicalWaitWithoutEntry(signal)) {
+    if (!hasPersistablePredictionRule(signal)) {
       return false;
     }
 
@@ -645,8 +739,17 @@ export class CryptoMarketScannerJob {
     );
   }
 
-  private isTechnicalWaitWithoutEntry(signal: SignalResult): boolean {
-    return signal.recommendation === "WAIT" && signal.entryPrice === 0;
+  private hasIdentifiedEntryRule(signal: SignalResult): boolean {
+    return this.getEntryRule(signal) !== "NONE";
+  }
+
+  private getEntryRule(signal: SignalResult): string {
+    const entryRule = (signal.features as Record<string, unknown>).entryRule;
+    return typeof entryRule === "string" ? entryRule : "NONE";
+  }
+
+  private isObservationRule(entryRule: string): boolean {
+    return entryRule.startsWith("OBSERVE_");
   }
 
   private isTooLateForOperationalPrediction(signal: SignalResult, runtimeData: MarketRuntimeData): boolean {
@@ -658,8 +761,8 @@ export class CryptoMarketScannerJob {
   }
 
   private getSkippedPredictionReason(signal: SignalResult, runtimeData: MarketRuntimeData): string {
-    if (this.isTechnicalWaitWithoutEntry(signal)) {
-      return "Snapshot stored; technical WAIT not saved as BotPrediction.";
+    if (!hasPersistablePredictionRule(signal)) {
+      return "Snapshot stored; signal has no entry or observation rule, so no BotPrediction was saved.";
     }
 
     if (this.isTooLateForOperationalPrediction(signal, runtimeData)) {
@@ -1026,12 +1129,18 @@ function getTargetPriceTrustedForLearning(rawData: string): boolean {
   return record.targetPrice !== undefined;
 }
 
+export function hasPersistablePredictionRule(signal: SignalResult): boolean {
+  const entryRule = (signal.features as Record<string, unknown>).entryRule;
+  return (
+    typeof entryRule === "string" &&
+    (entryRule.startsWith("ENTER_") || entryRule.startsWith("OBSERVE_"))
+  );
+}
+
 function isTrustedTargetSource(source: string): boolean {
   return [
-    "POLYMARKET_GAMMA",
     "POLYMARKET_CRYPTO_PRICE_API",
     "POLYMARKET_RTDS_CHAINLINK",
-    "POLYMARKET_UI_PAYLOAD",
     "POLYMARKET_UMA_ANCILLARY"
   ].includes(source);
 }

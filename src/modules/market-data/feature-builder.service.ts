@@ -37,6 +37,14 @@ export interface BotPredictionFeatures {
   impliedProbability: number | null;
   edge: number | null;
   entryRule: string | null;
+  baseRecommendation: string | null;
+  baseEntryRule: string | null;
+  finalRecommendation: string;
+  finalEntryRule: string | null;
+  confidenceAdjustment: number | null;
+  similarCases: number | null;
+  historicalWinRate: number | null;
+  historicalProfit: number | null;
 }
 
 export class FeatureBuilderService {
@@ -81,7 +89,16 @@ export class FeatureBuilderService {
       botProbability: normalizeNumber(input.signal.botProbability),
       impliedProbability: normalizeNumber(input.signal.impliedProbability),
       edge: normalizeNumber(input.signal.edge),
-      entryRule: getStringFeature(input.signal.features, "entryRule")
+      entryRule: getStringFeature(input.signal.features, "entryRule"),
+      baseRecommendation: getStringFeature(input.signal.features, "baseRecommendation"),
+      baseEntryRule: getStringFeature(input.signal.features, "baseEntryRule"),
+      finalRecommendation:
+        getStringFeature(input.signal.features, "finalRecommendation") ?? input.signal.recommendation,
+      finalEntryRule: getStringFeature(input.signal.features, "finalEntryRule"),
+      confidenceAdjustment: normalizeNumber(input.signal.confidenceAdjustment),
+      similarCases: getNumberFeature(input.signal.features, "similarCases"),
+      historicalWinRate: getNumberFeature(input.signal.features, "historicalWinRate"),
+      historicalProfit: getNumberFeature(input.signal.features, "historicalProfit")
     };
   }
 
@@ -94,6 +111,11 @@ function getStringFeature(features: SignalResult["features"], key: string): stri
   const record = features as Record<string, unknown>;
   const value = record[key];
   return typeof value === "string" ? value : null;
+}
+
+function getNumberFeature(features: SignalResult["features"], key: string): number | null {
+  const value = (features as Record<string, unknown>)[key];
+  return typeof value === "number" ? normalizeNumber(value) : null;
 }
 
 function normalizeNumber(value: number | null): number | null {

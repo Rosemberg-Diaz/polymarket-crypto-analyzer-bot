@@ -32,6 +32,11 @@ function makeTrade(isWin: boolean, profit: number, roi: number) {
     roi,
     entryPrice: 0.5,
     prediction: {
+      features: JSON.stringify({
+        targetPriceSource: "POLYMARKET_RTDS_CHAINLINK",
+        targetPriceTrustedForLearning: true,
+        distanceToTargetPercent: 0.002
+      }),
       snapshot: {
         secondsToClose: 60,
         distanceToTarget: 10,
@@ -86,5 +91,31 @@ describe("LearningService", () => {
     const result = await service.findSimilarHistoricalPerformance(baseFeatures);
     expect(result.winRate).toBeLessThan(0.48);
     expect(result.confidenceAdjustment).toBeLessThan(0);
+  });
+
+  it("excludes historical trades with untrusted or implausible targets", async () => {
+    const invalidTrade = {
+      ...makeTrade(true, 100, 20),
+      prediction: {
+        ...makeTrade(true, 100, 20).prediction,
+        features: JSON.stringify({
+          targetPriceSource: "POLYMARKET_UI_PAYLOAD",
+          targetPriceTrustedForLearning: true,
+          distanceToTargetPercent: 5.36
+        })
+      }
+    };
+
+    vi.mocked(prisma.simulatedTrade.findMany).mockResolvedValue(
+      [
+        invalidTrade,
+        ...Array.from({ length: 10 }, () => makeTrade(true, 1, 0.1))
+      ] as never
+    );
+
+    const result = await service.findSimilarHistoricalPerformance(baseFeatures);
+
+    expect(result.totalSimilarCases).toBe(10);
+    expect(result.totalProfit).toBe(10);
   });
 });

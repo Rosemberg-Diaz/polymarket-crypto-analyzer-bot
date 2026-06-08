@@ -30,6 +30,7 @@ model Market {
   snapshots        MarketSnapshot[]
   predictions      BotPrediction[]
   simulatedTrades  SimulatedTrade[]
+  observationEvaluations ObservationEvaluation[]
 
   @@index([assetSymbol])
   @@index([marketType])
@@ -105,6 +106,7 @@ model BotPrediction {
   historicalSummary  String?
   createdAt          DateTime         @default(now())
   simulatedTrades    SimulatedTrade[]
+  observationEvaluation ObservationEvaluation?
 
   @@index([marketId])
   @@index([snapshotId])
@@ -135,6 +137,35 @@ model SimulatedTrade {
 
   @@index([predictionId])
   @@index([marketId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([resolvedAt])
+}
+
+model ObservationEvaluation {
+  id               String        @id @default(cuid())
+  predictionId     String        @unique
+  prediction       BotPrediction @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+  marketId         String
+  market           Market        @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  observationType  String
+  hypotheticalStake Decimal
+  entryPrice       Decimal
+  shares           Decimal
+  status           String        @default("PENDING")
+  result           String?
+  wouldWin         Boolean?
+  finalValue       Decimal?
+  hypotheticalProfit Decimal?
+  hypotheticalRoi  Decimal?
+  resolutionSource String?
+  resolvedAt       DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([marketId])
+  @@unique([marketId, observationType])
+  @@index([observationType])
   @@index([status])
   @@index([createdAt])
   @@index([resolvedAt])

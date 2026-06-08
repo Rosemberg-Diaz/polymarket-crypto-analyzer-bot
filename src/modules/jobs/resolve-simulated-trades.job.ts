@@ -8,7 +8,7 @@ import { CryptoPriceService } from "../market-data/crypto-price.service";
 import { OfficialTargetResolverService } from "../market-data/official-target-resolver.service";
 import { SimulationService } from "../simulations/simulation.service";
 
-interface ResolvedOutcome {
+export interface ResolvedOutcome {
   name: string;
   normalizedName: string;
   source:
@@ -607,7 +607,7 @@ function isClosedOrInactive(market: PolymarketMarket): boolean {
   );
 }
 
-function inferWinningOutcome(market: PolymarketMarket): ResolvedOutcome | null {
+export function inferWinningOutcome(market: PolymarketMarket): ResolvedOutcome | null {
   const raw = getRawRecord(market);
   const candidates = [
     getString(raw, "resolution"),
@@ -643,7 +643,7 @@ function inferWinningOutcome(market: PolymarketMarket): ResolvedOutcome | null {
   return null;
 }
 
-function inferGammaWinnerFromOutcomePrices(market: PolymarketMarket): ResolvedOutcome | null {
+export function inferGammaWinnerFromOutcomePrices(market: PolymarketMarket): ResolvedOutcome | null {
   const raw = getRawRecord(market);
   const umaResolutionStatus = getString(raw, "umaResolutionStatus")?.toLowerCase();
   const closed = market.closed === true || getBoolean(raw, "closed") === true;
@@ -717,7 +717,7 @@ function parseOutcomeObjects(value: unknown): Array<Record<string, unknown> & { 
   });
 }
 
-function normalizeOutcome(value: string): string {
+export function normalizeOutcome(value: string): string {
   const normalized = value.trim().toUpperCase();
 
   if (["UP", "ABOVE", "OVER", "YES", "TRUE"].includes(normalized)) {

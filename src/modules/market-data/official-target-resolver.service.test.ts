@@ -3,6 +3,9 @@ import { NormalizedCryptoMarket } from "../crypto/crypto-market.types";
 import {
   OfficialTargetResolverService,
   findClosestPricePoint,
+  isOperationalUpDownTarget,
+  isTrustedUpDownTargetForStorage,
+  isWithinRtdsTargetRecoveryWindow,
   parseRtdsChainlinkPoints
 } from "./official-target-resolver.service";
 
@@ -23,18 +26,18 @@ describe("OfficialTargetResolverService", () => {
     expect(result.trustedForLearning).toBe(true);
   });
 
-  it("extracts a trusted target from Polymarket public UI payload text", async () => {
+  it("keeps a UI payload target untrusted for audit only", async () => {
     const fetchFn = vi.fn(async () => new Response(
       "<html><body><span>Precio a superar</span><strong>$67,388.11</strong></body></html>",
       { status: 200 }
     )) as unknown as typeof fetch;
     const service = new OfficialTargetResolverService(undefined, { fetchFn });
 
-    const result = await service.resolveOfficialTarget(makeMarket());
+    const result = await service.resolveFromPolymarketUi("btc-updown-5m-1780422000");
 
     expect(result.targetPrice).toBe(67388.11);
     expect(result.source).toBe("POLYMARKET_UI_PAYLOAD");
-    expect(result.trustedForLearning).toBe(true);
+    expect(result.trustedForLearning).toBe(false);
   });
 
   it("extracts a trusted Chainlink opening price from Polymarket crypto-price API", async () => {
@@ -66,6 +69,32 @@ describe("OfficialTargetResolverService", () => {
     expect(result.targetPrice).toBeNull();
     expect(result.source).toBe("UNKNOWN");
     expect(result.trustedForLearning).toBe(false);
+  });
+
+  it("rejects UI targets and targets far from the current asset price", () => {
+    expect(isOperationalUpDownTarget(10, "POLYMARKET_UI_PAYLOAD", 63.5)).toBe(false);
+    expect(isOperationalUpDownTarget(10, "POLYMARKET_RTDS_CHAINLINK", 63.5)).toBe(false);
+    expect(isOperationalUpDownTarget(63.1, "POLYMARKET_RTDS_CHAINLINK", 63.5)).toBe(true);
+  });
+
+  it("retains a trusted official target when spot price is temporarily unavailable", () => {
+    expect(isOperationalUpDownTarget(63.1, "POLYMARKET_RTDS_CHAINLINK", null)).toBe(false);
+    expect(isTrustedUpDownTargetForStorage(63.1, "POLYMARKET_RTDS_CHAINLINK", null)).toBe(true);
+    expect(isTrustedUpDownTargetForStorage(63.1, "POLYMARKET_UI_PAYLOAD", null)).toBe(false);
+  });
+
+  it("keeps RTDS recovery open throughout the active 5-minute window", () => {
+    const windowStart = new Date("2026-06-06T02:35:00Z");
+
+    expect(
+      isWithinRtdsTargetRecoveryWindow("5m", windowStart, windowStart.getTime() + 90_000)
+    ).toBe(true);
+    expect(
+      isWithinRtdsTargetRecoveryWindow("5m", windowStart, windowStart.getTime() + 316_000)
+    ).toBe(false);
+    expect(
+      isWithinRtdsTargetRecoveryWindow("unknown", windowStart, windowStart.getTime())
+    ).toBe(false);
   });
 
   it("parses RTDS Chainlink points and finds the exact close timestamp", () => {

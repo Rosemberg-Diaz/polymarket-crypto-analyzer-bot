@@ -23,11 +23,16 @@ export interface OfficialChainlinkPriceResolution {
 interface OfficialTargetResolverOptions {
   timeoutMs?: number;
   fetchFn?: typeof fetch;
+  rtdsMaxRetries?: number;
+  rtdsRetryBaseDelayMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_RTDS_MAX_RETRIES = 2;
+const DEFAULT_RTDS_RETRY_BASE_DELAY_MS = 300;
 const RTDS_WS_URL = "wss://ws-live-data.polymarket.com";
 const RTDS_TARGET_MAX_DISTANCE_MS = 10_000;
+const RTDS_TARGET_RECOVERY_GRACE_MS = 15_000;
 const POLYMARKET_PAGE_URLS = [
   (slug: string) => `https://polymarket.com/event/${encodeURIComponent(slug)}`,
   (slug: string) => `https://polymarket.com/es/event/${encodeURIComponent(slug)}`,
@@ -49,10 +54,69 @@ const OFFICIAL_RAW_PRICE_KEYS = [
   "thresholdPrice",
   "threshold_price"
 ];
+const OPERATIONAL_UP_DOWN_TARGET_SOURCES: TargetPriceSource[] = [
+  "POLYMARKET_CRYPTO_PRICE_API",
+  "POLYMARKET_RTDS_CHAINLINK",
+  "POLYMARKET_UMA_ANCILLARY"
+];
+
+export function isOperationalUpDownTarget(
+  targetPrice: number,
+  source: string,
+  currentAssetPrice: number | null
+): boolean {
+  if (
+    !Number.isFinite(targetPrice) ||
+    targetPrice <= 0 ||
+    currentAssetPrice === null ||
+    !Number.isFinite(currentAssetPrice) ||
+    currentAssetPrice <= 0 ||
+    !OPERATIONAL_UP_DOWN_TARGET_SOURCES.includes(source as TargetPriceSource)
+  ) {
+    return false;
+  }
+
+  return Math.abs(currentAssetPrice - targetPrice) / targetPrice <= 0.1;
+}
+
+export function isTrustedUpDownTargetForStorage(
+  targetPrice: number,
+  source: string,
+  currentAssetPrice: number | null
+): boolean {
+  if (
+    !Number.isFinite(targetPrice) ||
+    targetPrice <= 0 ||
+    !OPERATIONAL_UP_DOWN_TARGET_SOURCES.includes(source as TargetPriceSource)
+  ) {
+    return false;
+  }
+
+  if (currentAssetPrice === null) {
+    return true;
+  }
+
+  return isOperationalUpDownTarget(targetPrice, source, currentAssetPrice);
+}
+
+export function isWithinRtdsTargetRecoveryWindow(
+  timeframe: NormalizedCryptoMarket["timeframe"],
+  windowStart: Date,
+  nowMs = Date.now()
+): boolean {
+  const timeframeMs = getTimeframeMs(timeframe);
+  if (timeframeMs === null) {
+    return false;
+  }
+
+  return nowMs <= windowStart.getTime() + timeframeMs + RTDS_TARGET_RECOVERY_GRACE_MS;
+}
 
 export class OfficialTargetResolverService {
   private readonly timeoutMs: number;
   private readonly fetchFn: typeof fetch;
+  private readonly rtdsMaxRetries: number;
+  private readonly rtdsRetryBaseDelayMs: number;
 
   constructor(
     private readonly logger?: LoggerService,
@@ -60,14 +124,11 @@ export class OfficialTargetResolverService {
   ) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchFn = options.fetchFn ?? fetch;
+    this.rtdsMaxRetries = options.rtdsMaxRetries ?? DEFAULT_RTDS_MAX_RETRIES;
+    this.rtdsRetryBaseDelayMs = options.rtdsRetryBaseDelayMs ?? DEFAULT_RTDS_RETRY_BASE_DELAY_MS;
   }
 
   async resolveOfficialTarget(market: NormalizedCryptoMarket): Promise<OfficialTargetResolution> {
-    const rawResolution = this.resolveFromRawData(market.rawData);
-    if (rawResolution.targetPrice !== null) {
-      return rawResolution;
-    }
-
     if (!market.slug) {
       return unresolved("Market slug is missing.");
     }
@@ -80,6 +141,11 @@ export class OfficialTargetResolverService {
     const rtdsResolution = await this.resolveFromPolymarketRtdsChainlink(market);
     if (rtdsResolution.targetPrice !== null) {
       return rtdsResolution;
+    }
+
+    const rawResolution = this.resolveFromRawData(market.rawData);
+    if (rawResolution.targetPrice !== null) {
+      return rawResolution;
     }
 
     const uiResolution = await this.resolveFromPolymarketUi(market.slug);
@@ -98,12 +164,12 @@ export class OfficialTargetResolverService {
       return unresolved("Missing symbol or window start for Polymarket RTDS Chainlink stream.");
     }
 
-    if (Date.now() > windowStart.getTime() + 60_000) {
+    if (!isWithinRtdsTargetRecoveryWindow(market.timeframe, windowStart)) {
       return unresolved("Window start is too old for RTDS target capture.");
     }
 
     try {
-      const points = await this.fetchRtdsChainlinkPrices(symbol);
+      const points = await this.fetchRtdsChainlinkPricesWithRetry(symbol);
       const closestPoint = findClosestPricePoint(points, windowStart.getTime());
 
       if (!closestPoint || Math.abs(closestPoint.timestamp - windowStart.getTime()) > RTDS_TARGET_MAX_DISTANCE_MS) {
@@ -145,7 +211,7 @@ export class OfficialTargetResolverService {
     }
 
     try {
-      const points = await this.fetchRtdsChainlinkPrices(symbol);
+      const points = await this.fetchRtdsChainlinkPricesWithRetry(symbol);
       const closestPoint = findClosestPricePoint(points, timestamp.getTime());
 
       if (!closestPoint || Math.abs(closestPoint.timestamp - timestamp.getTime()) > maxDistanceMs) {
@@ -176,12 +242,57 @@ export class OfficialTargetResolverService {
     }
   }
 
+  private async fetchRtdsChainlinkPricesWithRetry(symbol: string): Promise<ChainlinkPricePoint[]> {
+    let lastError: unknown = new Error("RTDS Chainlink price fetch did not run.");
+
+    for (let attempt = 0; attempt <= this.rtdsMaxRetries; attempt += 1) {
+      try {
+        return await this.fetchRtdsChainlinkPrices(symbol);
+      } catch (error) {
+        lastError = error;
+        if (attempt >= this.rtdsMaxRetries) {
+          break;
+        }
+
+        const backoffMs = this.rtdsRetryBaseDelayMs * 2 ** attempt;
+        this.logger?.warn("Polymarket RTDS connection failed. Retrying.", {
+          symbol,
+          attempt: attempt + 1,
+          maxAttempts: this.rtdsMaxRetries + 1,
+          backoffMs,
+          reason: error instanceof Error ? error.message : String(error)
+        });
+        await sleep(backoffMs);
+      }
+    }
+
+    throw lastError;
+  }
+
   private fetchRtdsChainlinkPrices(symbol: string): Promise<ChainlinkPricePoint[]> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(RTDS_WS_URL);
+      let settled = false;
+      const finish = (
+        callback: (value: ChainlinkPricePoint[] | Error) => void,
+        value: ChainlinkPricePoint[] | Error
+      ): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timeout);
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+        callback(value);
+      };
       const timeout = setTimeout(() => {
-        ws.close();
-        reject(new Error("Timed out waiting for RTDS Chainlink price payload."));
+        finish(
+          (error) => reject(error as Error),
+          new Error("Timed out waiting for RTDS Chainlink price payload.")
+        );
       }, this.timeoutMs);
 
       ws.on("open", () => {
@@ -206,18 +317,20 @@ export class OfficialTargetResolverService {
           return;
         }
 
-        clearTimeout(timeout);
-        ws.close();
-        resolve(points);
+        finish((value) => resolve(value as ChainlinkPricePoint[]), points);
       });
 
       ws.on("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
+        finish((value) => reject(value as Error), error);
       });
 
       ws.on("close", () => {
-        clearTimeout(timeout);
+        if (!settled) {
+          finish(
+            (error) => reject(error as Error),
+            new Error("RTDS connection closed before a Chainlink price payload arrived.")
+          );
+        }
       });
     });
   }
@@ -293,7 +406,11 @@ export class OfficialTargetResolverService {
         const targetPrice = extractTargetFromText(html);
         if (targetPrice !== null) {
           return {
-            ...resolved(targetPrice, "POLYMARKET_UI_PAYLOAD", "Found target price in Polymarket public UI payload."),
+            ...untrustedResolved(
+              targetPrice,
+              "POLYMARKET_UI_PAYLOAD",
+              "Found target-like text in Polymarket UI payload; retained for audit only."
+            ),
             rawEvidence: trimEvidence(html, targetPrice)
           };
         }
@@ -341,6 +458,20 @@ function resolved(
     targetPrice: round6(targetPrice),
     source,
     trustedForLearning: true,
+    reason,
+    fetchedAt: new Date()
+  };
+}
+
+function untrustedResolved(
+  targetPrice: number,
+  source: TargetPriceSource,
+  reason: string
+): OfficialTargetResolution {
+  return {
+    targetPrice: round6(targetPrice),
+    source,
+    trustedForLearning: false,
     reason,
     fetchedAt: new Date()
   };
@@ -557,4 +688,10 @@ function getTimeframeMs(timeframe: string): number | null {
 
 function round6(value: number): number {
   return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

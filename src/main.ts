@@ -4,6 +4,7 @@ import { BackupService } from "./modules/backup/backup.service";
 import { HealthCheckService } from "./modules/health/health-check.service";
 import { CryptoMarketScannerJob } from "./modules/jobs/crypto-market-scanner.job";
 import { DailyMaintenanceJob } from "./modules/jobs/daily-maintenance.job";
+import { ResolveObservationEvaluationsJob } from "./modules/jobs/resolve-observation-evaluations.job";
 import { ResolveSimulatedTradesJob } from "./modules/jobs/resolve-simulated-trades.job";
 import { LearningService } from "./modules/learning/learningService";
 import { LoggerService } from "./modules/logger/logger.service";
@@ -18,6 +19,7 @@ async function bootstrap(): Promise<void> {
   const dailyMaintenanceJob = new DailyMaintenanceJob(backupService, logger);
   const scannerJob = new CryptoMarketScannerJob(logger);
   const resolveSimulatedTradesJob = new ResolveSimulatedTradesJob(logger);
+  const resolveObservationEvaluationsJob = new ResolveObservationEvaluationsJob(logger);
   const healthCheckService = new HealthCheckService();
   let scanTimer: NodeJS.Timeout | null = null;
   let maintenanceTimer: NodeJS.Timeout | null = null;
@@ -62,6 +64,7 @@ async function bootstrap(): Promise<void> {
       try {
         await scannerJob.runOnce();
         await resolveSimulatedTradesJob.runOnce();
+        await resolveObservationEvaluationsJob.runOnce();
         const health = await healthCheckService.getStatus();
         logger.info("Health check", health);
       } catch (error) {

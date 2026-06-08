@@ -56,6 +56,8 @@ export class SignalEngine {
   }
 
   private async applyLearning(input: SignalInput, signal: SignalResult): Promise<SignalResult> {
+    const baseRecommendation = signal.recommendation;
+    const baseEntryRule = getEntryRule(signal.features);
     const performance = await this.learningService.findSimilarHistoricalPerformance({
       strategyName: signal.strategyName,
       marketType: input.marketType,
@@ -79,6 +81,10 @@ export class SignalEngine {
         confidenceAdjustment: 0,
         features: {
           ...signal.features,
+          baseRecommendation,
+          baseEntryRule,
+          finalRecommendation: signal.recommendation,
+          finalEntryRule: baseEntryRule,
           similarCases: performance.totalSimilarCases,
           historicalWinRate: performance.winRate,
           historicalProfit: performance.totalProfit
@@ -88,18 +94,29 @@ export class SignalEngine {
 
     const adjustedBotProbability = clamp(signal.botProbability + performance.confidenceAdjustment, 0.01, 0.99);
     const adjustedEdge = adjustedBotProbability - signal.impliedProbability;
+    const finalRecommendation = adjustRecommendation(
+      signal.recommendation,
+      performance.confidenceAdjustment,
+      adjustedEdge
+    );
+    const finalEntryRule = getFinalEntryRule(baseEntryRule, baseRecommendation, finalRecommendation);
 
     return {
       ...signal,
       botProbability: round6(adjustedBotProbability),
       edge: round6(adjustedEdge),
-      recommendation: adjustRecommendation(signal.recommendation, performance.confidenceAdjustment, adjustedEdge),
+      recommendation: finalRecommendation,
       confidence: adjustConfidence(signal.confidence, performance.confidenceAdjustment),
       reason: `${signal.reason} ${performance.historicalSummary}`,
       historicalSummary: performance.historicalSummary,
       confidenceAdjustment: performance.confidenceAdjustment,
       features: {
         ...signal.features,
+        entryRule: finalEntryRule,
+        baseRecommendation,
+        baseEntryRule,
+        finalRecommendation,
+        finalEntryRule,
         similarCases: performance.totalSimilarCases,
         historicalWinRate: performance.winRate,
         historicalProfit: performance.totalProfit,
@@ -146,10 +163,6 @@ function adjustRecommendation(
     return "AVOID";
   }
 
-  if (adjustment > 0 && current === "WAIT" && adjustedEdge >= 0.03) {
-    return "ENTER_SMALL";
-  }
-
   if (adjustment < 0 && current === "ENTER_MODERATE") {
     return "ENTER_SMALL";
   }
@@ -163,6 +176,31 @@ function adjustRecommendation(
   }
 
   return current;
+}
+
+function getEntryRule(features: SignalResult["features"]): string {
+  const value = (features as Record<string, unknown>).entryRule;
+  return typeof value === "string" ? value : "NONE";
+}
+
+function getFinalEntryRule(
+  baseEntryRule: string,
+  baseRecommendation: Recommendation,
+  finalRecommendation: Recommendation
+): string {
+  if (finalRecommendation === "WAIT" && baseEntryRule.startsWith("OBSERVE_")) {
+    return baseEntryRule;
+  }
+
+  if (finalRecommendation === "WAIT" || finalRecommendation === "AVOID") {
+    return "NONE";
+  }
+
+  if (baseRecommendation === "ENTER_MODERATE" && finalRecommendation === "ENTER_SMALL") {
+    return "ENTER_SMALL_LEARNING_DEFENSIVE";
+  }
+
+  return baseEntryRule;
 }
 
 function adjustConfidence(current: Confidence, adjustment: number): Confidence {
