@@ -1,10 +1,12 @@
+import WebSocket from "ws";
 import { CryptoAsset } from "../../config/assets";
 import { LoggerService } from "../logger/logger.service";
+import { parseRtdsChainlinkPoints } from "./official-target-resolver.service";
 
 export interface CryptoSpotPrice {
   assetSymbol: CryptoAsset;
   priceUsd: number | null;
-  source: "COINBASE" | "COINGECKO" | "UNSUPPORTED" | "ERROR";
+  source: "POLYMARKET_CHAINLINK" | "COINBASE" | "COINGECKO" | "UNSUPPORTED" | "ERROR";
   fetchedAt: Date;
 }
 
@@ -15,6 +17,7 @@ interface CachedPrice {
 
 const COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3";
 const COINBASE_BASE_URL = "https://api.coinbase.com/v2";
+const RTDS_WS_URL = "wss://ws-live-data.polymarket.com";
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
@@ -54,6 +57,15 @@ export class CryptoPriceService {
     if (cached && cached.expiresAt > Date.now()) {
       return cached.value;
     }
+
+    const chainlinkPrice = await this.fetchPolymarketChainlinkPrice(assetSymbol);
+    if (chainlinkPrice !== null) {
+      return this.cacheAndReturn(assetSymbol, chainlinkPrice, "POLYMARKET_CHAINLINK");
+    }
+
+    this.logger?.warn("Polymarket Chainlink price unavailable. Falling back to Coinbase.", {
+      assetSymbol
+    });
 
     const coinbasePair = COINBASE_PAIRS[assetSymbol];
     const coingeckoId = COINGECKO_IDS[assetSymbol];
@@ -131,6 +143,53 @@ export class CryptoPriceService {
     }
 
     return this.cacheAndReturn(assetSymbol, null, "ERROR");
+  }
+
+  private fetchPolymarketChainlinkPrice(assetSymbol: CryptoAsset): Promise<number | null> {
+    const symbol = `${assetSymbol.toLowerCase()}/usd`;
+
+    return new Promise((resolve) => {
+      const ws = new WebSocket(RTDS_WS_URL);
+      let settled = false;
+      const finish = (price: number | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+        resolve(price);
+      };
+      const timeout = setTimeout(() => finish(null), this.timeoutMs);
+
+      ws.on("open", () => {
+        ws.send(JSON.stringify({
+          action: "subscribe",
+          subscriptions: [{
+            topic: "crypto_prices_chainlink",
+            type: "*",
+            filters: JSON.stringify({ symbol })
+          }]
+        }));
+      });
+
+      ws.on("message", (data) => {
+        const text = data.toString();
+        if (!text.trim()) return;
+
+        try {
+          const points = parseRtdsChainlinkPoints(text, symbol);
+          if (points.length === 0) return;
+          const latest = points.reduce((a, b) => a.timestamp > b.timestamp ? a : b);
+          finish(latest.value);
+        } catch {
+          finish(null);
+        }
+      });
+
+      ws.on("error", () => finish(null));
+      ws.on("close", () => finish(null));
+    });
   }
 
   private async fetchCoinbasePrice(assetSymbol: CryptoAsset, pair: string): Promise<number | null> {
