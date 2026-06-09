@@ -48,7 +48,7 @@ const HEAVY_DISCOVERY_SCAN_INTERVAL_MS = 60 * 1000;
 const UP_DOWN_TARGET_CAPTURE_WINDOW_MS = 60 * 1000;
 const UP_DOWN_5M_WINDOW_MS = 5 * 60 * 1000;
 const MIN_SECONDS_TO_CLOSE_FOR_OPERATIONAL_SIGNAL = 20;
-const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL"]);
+const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "BNB"]);
 
 export class CryptoMarketScannerJob {
   private readonly polymarketClient = new PolymarketClient();

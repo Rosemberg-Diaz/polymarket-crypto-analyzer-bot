@@ -24,7 +24,7 @@ module.exports = {
         ENABLE_REAL_TRADING: "true",
         REAL_STAKE_USD: "5",
         MARKET_CATEGORY: "CRYPTO",
-        PRIORITY_ASSETS: "BTC,ETH,SOL",
+        PRIORITY_ASSETS: "BTC,ETH,SOL,XRP,DOGE,BNB",
         PRIORITIZE_SHORT_TERM_UP_DOWN: "true"
       },
       error_file: "logs/pm2-error.log",

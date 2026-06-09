@@ -19,7 +19,7 @@ const ACTIVE_SERIES_PAGE_SIZE = 100;
 const ACTIVE_SERIES_MAX_PAGES = 2;
 const CLOB_SAMPLING_MARKET_MAX_PAGES = 6;
 const DISCOVERY_CACHE_TTL_MS = 60 * 1000;
-const RECURRING_UP_DOWN_ASSETS = ["btc", "eth", "sol"] as const;
+const RECURRING_UP_DOWN_ASSETS = ["btc", "eth", "sol", "xrp", "doge", "avax", "bnb"] as const;
 const RECURRING_UP_DOWN_TIMEFRAME_SECONDS = 5 * 60;
 const FAST_RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS = [0];
 const RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS = [
@@ -81,7 +81,6 @@ export class PolymarketService {
       .map((market) => mapPolymarketMarketToCryptoMarket(market))
       .filter((market): market is NormalizedCryptoMarket => market !== null)
       .filter((market) => market.marketType === "UP_DOWN_SHORT_TERM" && market.timeframe === "5m");
-
     return sortPolymarketCryptoMarkets(cryptoMarkets);
   }
 
