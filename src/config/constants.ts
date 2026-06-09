@@ -8,6 +8,7 @@ export const DEFAULTS = {
   enableRealTrading: false,
   scanIntervalSeconds: 10,
   simulatedStakeUsd: 5,
+  realStakeUsd: 10,
   maxSpread: 0.05,
   minLiquidity: 100,
   marketCategory: "CRYPTO",
@@ -23,6 +24,7 @@ export const DEFAULTS = {
 export const MIN_VALUES = {
   scanIntervalSeconds: 1,
   simulatedStakeUsd: 0.01,
+  realStakeUsd: 1,
   maxSpread: 0,
   minLiquidity: 0,
   backupIntervalHours: 1,

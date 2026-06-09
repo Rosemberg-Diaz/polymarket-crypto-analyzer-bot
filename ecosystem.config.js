@@ -20,8 +20,9 @@ module.exports = {
       time: true,
       env: {
         NODE_ENV: "production",
-        APP_MODE: "SIMULATION_ONLY",
-        ENABLE_REAL_TRADING: "false",
+        APP_MODE: "LIVE_TRADING",
+        ENABLE_REAL_TRADING: "true",
+        REAL_STAKE_USD: "5",
         MARKET_CATEGORY: "CRYPTO",
         PRIORITY_ASSETS: "BTC,ETH,SOL",
         PRIORITIZE_SHORT_TERM_UP_DOWN: "true"

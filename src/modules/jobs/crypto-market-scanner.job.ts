@@ -20,6 +20,7 @@ import { SignalEngine } from "../signals/signal.engine";
 import { SignalInput, SignalResult } from "../signals/signal.types";
 import { ObservationEvaluationService } from "../simulations/observation-evaluation.service";
 import { SimulationService } from "../simulations/simulation.service";
+import { PolymarketTradingService } from "../trading/polymarket-trading.service";
 
 interface MarketRuntimeData {
   upPrice: number | null;
@@ -61,11 +62,26 @@ export class CryptoMarketScannerJob {
   private readonly cryptoPriceService: CryptoPriceService;
   private readonly lastSignalByMarket = new Map<string, number>();
   private lastHeavyDiscoveryAt = 0;
+  private readonly tradingService: PolymarketTradingService | null = null;
 
   constructor(private readonly logger: LoggerService) {
     this.polymarketService = new PolymarketService(this.polymarketClient, this.logger);
     this.officialTargetResolverService = new OfficialTargetResolverService(this.logger);
     this.cryptoPriceService = new CryptoPriceService(this.logger);
+
+    if (config.enableRealTrading && config.polygonPrivateKey && config.addressWallet) {
+      const service = new PolymarketTradingService(
+        config.polygonPrivateKey,
+        config.addressWallet,
+        this.logger
+      );
+      service.initialize().then((ok) => {
+        if (ok) {
+          this.logger.info("Real-money trading service is ready.");
+        }
+      });
+      this.tradingService = service;
+    }
   }
 
   async runOnce(): Promise<void> {
@@ -222,10 +238,24 @@ export class CryptoMarketScannerJob {
         const trade = await this.simulationService.createPendingSimulation(
           prediction.id,
           savedMarket.id,
-          config.simulatedStakeUsd,
+          config.realStakeUsd,
           signal.entryPrice
         );
-        simulationText = `Pending simulated trade ${trade.id}, stake $${config.simulatedStakeUsd}, shares ${trade.shares.toString()}.`;
+        simulationText = `Pending simulated trade ${trade.id}, stake $${config.realStakeUsd}, shares ${trade.shares.toString()}.`;
+
+        if (config.enableRealTrading && this.tradingService) {
+          const result = await this.tradingService.placeOrder(
+            market,
+            config.realStakeUsd,
+            signal.entryPrice,
+            signal.predictedOutcome as "UP" | "DOWN"
+          );
+          if (result.success) {
+            simulationText += ` | Real order placed: ${result.orderId}`;
+          } else {
+            simulationText += ` | Real order FAILED: ${result.error}`;
+          }
+        }
       } else if (!riskAssessment.allowed) {
         simulationText = `Risk blocked: ${riskAssessment.reason} (${riskAssessment.riskLevel}).`;
       } else if (

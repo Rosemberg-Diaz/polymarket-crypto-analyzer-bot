@@ -4,15 +4,16 @@ import { DEFAULTS, MIN_VALUES } from "./constants";
 
 dotenv.config();
 
-export type AppMode = "SIMULATION_ONLY";
+export type AppMode = "SIMULATION_ONLY" | "LIVE_TRADING";
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export interface AppConfig {
   databaseUrl: string;
   appMode: AppMode;
-  enableRealTrading: false;
+  enableRealTrading: boolean;
   scanIntervalSeconds: number;
   simulatedStakeUsd: number;
+  realStakeUsd: number;
   maxSpread: number;
   minLiquidity: number;
   marketCategory: "CRYPTO";
@@ -23,6 +24,9 @@ export interface AppConfig {
   logLevel: LogLevel;
   mlEnabled: boolean;
   mlMinResolvedTrades: number;
+  polygonPrivateKey: string | null;
+  addressWallet: string | null;
+  apiKey: string | null;
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -71,13 +75,13 @@ function parsePriorityAssets(value: string | undefined): CryptoAsset[] {
   return assets.length > 0 ? assets : DEFAULT_PRIORITY_ASSETS;
 }
 
-function requireSimulationOnly(appMode: string, enableRealTrading: boolean): void {
-  if (appMode !== "SIMULATION_ONLY") {
-    throw new Error("APP_MODE debe ser SIMULATION_ONLY en esta version inicial.");
+function validateAppMode(appMode: string, enableRealTrading: boolean): void {
+  if (appMode !== "SIMULATION_ONLY" && appMode !== "LIVE_TRADING") {
+    throw new Error("APP_MODE debe ser SIMULATION_ONLY o LIVE_TRADING.");
   }
 
-  if (enableRealTrading) {
-    throw new Error("ENABLE_REAL_TRADING debe ser false. Trading real no esta permitido.");
+  if (enableRealTrading && appMode !== "LIVE_TRADING") {
+    throw new Error("ENABLE_REAL_TRADING requiere APP_MODE=LIVE_TRADING.");
   }
 }
 
@@ -94,12 +98,12 @@ function parseLogLevel(value: string | undefined): LogLevel {
 const rawAppMode = process.env.APP_MODE ?? DEFAULTS.appMode;
 const rawEnableRealTrading = parseBoolean(process.env.ENABLE_REAL_TRADING, DEFAULTS.enableRealTrading);
 
-requireSimulationOnly(rawAppMode, rawEnableRealTrading);
+validateAppMode(rawAppMode, rawEnableRealTrading);
 
 export const config: AppConfig = {
   databaseUrl: process.env.DATABASE_URL ?? DEFAULTS.databaseUrl,
-  appMode: DEFAULTS.appMode,
-  enableRealTrading: DEFAULTS.enableRealTrading,
+  appMode: rawAppMode as AppMode,
+  enableRealTrading: rawEnableRealTrading,
   scanIntervalSeconds: parseNumber(
     process.env.SCAN_INTERVAL_SECONDS,
     DEFAULTS.scanIntervalSeconds,
@@ -109,6 +113,11 @@ export const config: AppConfig = {
     process.env.SIMULATED_STAKE_USD,
     DEFAULTS.simulatedStakeUsd,
     MIN_VALUES.simulatedStakeUsd
+  ),
+  realStakeUsd: parseNumber(
+    process.env.REAL_STAKE_USD,
+    DEFAULTS.realStakeUsd,
+    MIN_VALUES.realStakeUsd
   ),
   maxSpread: parseNumber(process.env.MAX_SPREAD, DEFAULTS.maxSpread, MIN_VALUES.maxSpread),
   minLiquidity: parseNumber(process.env.MIN_LIQUIDITY, DEFAULTS.minLiquidity, MIN_VALUES.minLiquidity),
@@ -130,5 +139,8 @@ export const config: AppConfig = {
     process.env.ML_MIN_RESOLVED_TRADES,
     DEFAULTS.mlMinResolvedTrades,
     MIN_VALUES.mlMinResolvedTrades
-  )
+  ),
+  polygonPrivateKey: process.env.POLYGON_PRIVATE_KEY ?? null,
+  addressWallet: process.env.ADDRESS_WALLET ?? null,
+  apiKey: process.env.API_KEY ?? null
 };
