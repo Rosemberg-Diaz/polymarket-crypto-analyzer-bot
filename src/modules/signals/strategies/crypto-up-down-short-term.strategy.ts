@@ -439,9 +439,14 @@ function isLightEntrySetup(params: {
   );
 }
 
-function isOperationalLightEntrySetup(_params: {
+function isOperationalLightEntrySetup(params: {
   assetSymbol: string;
+  entryPrice: number;
 }): boolean {
+  if (params.assetSymbol === "SOL" && params.entryPrice >= 0.5 && params.entryPrice <= 0.69) {
+    return true;
+  }
+
   return false;
 }
 
