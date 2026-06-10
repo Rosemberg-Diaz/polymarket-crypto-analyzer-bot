@@ -3,6 +3,11 @@ dist/
 apps/web/dist/
 .env
 
+# Compiled JS alongside TS sources (separate tsc output, not tracked)
+src/**/*.js
+scripts/*.js
+temp_query.sql
+
 prisma/dev.db
 prisma/dev.db-journal
 
