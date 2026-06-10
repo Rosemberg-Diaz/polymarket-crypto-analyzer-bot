@@ -27,6 +27,11 @@ export interface AppConfig {
   polygonPrivateKey: string | null;
   addressWallet: string | null;
   apiKey: string | null;
+  forceTestTrade: boolean;
+  polymarketApiKey: string | null;
+  polymarketSecret: string | null;
+  polymarketPassphrase: string | null;
+  polymarketFunderAddress: string | null;
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -140,7 +145,12 @@ export const config: AppConfig = {
     DEFAULTS.mlMinResolvedTrades,
     MIN_VALUES.mlMinResolvedTrades
   ),
-  polygonPrivateKey: process.env.POLYGON_PRIVATE_KEY ?? null,
+  polygonPrivateKey: process.env.WALLET_PRIVATE_KEY ?? process.env.POLYGON_PRIVATE_KEY ?? null,
   addressWallet: process.env.ADDRESS_WALLET ?? null,
-  apiKey: process.env.API_KEY ?? null
+  apiKey: process.env.API_KEY ?? null,
+  forceTestTrade: parseBoolean(process.env.FORCE_TEST_TRADE, false),
+  polymarketApiKey: process.env.POLYMARKET_API_KEY ?? null,
+  polymarketSecret: process.env.POLYMARKET_SECRET ?? null,
+  polymarketPassphrase: process.env.POLYMARKET_PASSPHRASE ?? null,
+  polymarketFunderAddress: process.env.POLYMARKET_FUNDER_ADDRESS ?? null,
 };

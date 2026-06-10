@@ -35,10 +35,14 @@ export class SimulationService {
     predictionId: string,
     marketId: string,
     stake: number,
-    entryPrice: number
+    entryPrice: number,
+    skipRiskCheck = false
   ): Promise<SimulatedTrade> {
     this.validateCalculationInput(stake, entryPrice);
-    await this.ensureRiskApproved(predictionId, marketId, entryPrice);
+
+    if (!skipRiskCheck) {
+      await this.ensureRiskApproved(predictionId, marketId, entryPrice);
+    }
     const shares = round6(stake / entryPrice);
 
     return prisma.simulatedTrade.create({

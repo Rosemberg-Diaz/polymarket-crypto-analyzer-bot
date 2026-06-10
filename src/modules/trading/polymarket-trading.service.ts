@@ -6,7 +6,8 @@ import {
   Chain,
   ClobClient,
   OrderType,
-  Side
+  Side,
+  SignatureTypeV2
 } from "@polymarket/clob-client-v2";
 import { LoggerService } from "../logger/logger.service";
 import { NormalizedCryptoMarket } from "../crypto/crypto-market.types";
@@ -27,8 +28,16 @@ export class PolymarketTradingService {
   constructor(
     private readonly privateKey: string,
     private readonly walletAddress: string,
-    private readonly logger?: LoggerService
+    private readonly logger?: LoggerService,
+    private readonly apiKey?: string,
+    private readonly apiSecret?: string,
+    private readonly apiPassphrase?: string,
+    private readonly funderAddress?: string
   ) {}
+
+  isReady(): boolean {
+    return this.initialized;
+  }
 
   async initialize(): Promise<boolean> {
     try {
@@ -39,25 +48,43 @@ export class PolymarketTradingService {
         transport: http()
       });
 
-      const tempClient = new ClobClient({
-        host: CLOB_API_URL,
-        chain: CHAIN_ID as Chain,
-        signer: walletClient
-      });
+      const effectiveFunder = this.funderAddress ?? this.walletAddress;
 
-      const creds = await tempClient.createOrDeriveApiKey();
-
-      this.clobClient = new ClobClient({
-        host: CLOB_API_URL,
-        chain: CHAIN_ID as Chain,
-        signer: walletClient,
-        creds,
-        signatureType: 1,
-        funderAddress: this.walletAddress
-      });
+      if (this.apiKey && this.apiSecret && this.apiPassphrase) {
+        this.clobClient = new ClobClient({
+          host: CLOB_API_URL,
+          chain: CHAIN_ID as Chain,
+          signer: walletClient,
+          creds: {
+            key: this.apiKey,
+            secret: this.apiSecret,
+            passphrase: this.apiPassphrase
+          },
+          signatureType: SignatureTypeV2.POLY_1271,
+          funderAddress: effectiveFunder
+        });
+      } else {
+        const tempClient = new ClobClient({
+          host: CLOB_API_URL,
+          chain: CHAIN_ID as Chain,
+          signer: walletClient
+        });
+        const creds = await tempClient.createOrDeriveApiKey();
+        this.clobClient = new ClobClient({
+          host: CLOB_API_URL,
+          chain: CHAIN_ID as Chain,
+          signer: walletClient,
+          creds,
+          signatureType: SignatureTypeV2.POLY_1271,
+          funderAddress: effectiveFunder
+        });
+      }
 
       this.initialized = true;
-      this.logger?.info("Polymarket trading service initialized successfully.");
+      this.logger?.info("Polymarket trading service initialized successfully.", {
+        signatureType: SignatureTypeV2.POLY_1271,
+        funderAddress: effectiveFunder
+      });
       return true;
     } catch (error) {
       this.logger?.error("Failed to initialize Polymarket trading service.", {
@@ -67,10 +94,37 @@ export class PolymarketTradingService {
     }
   }
 
-  async getUsdcBalance(): Promise<number | null> {
+  async syncBalanceAllowance(): Promise<boolean> {
+    if (!this.clobClient) {
+      this.logger?.warn("Trading service not initialized.");
+      return false;
+    }
+    try {
+      await this.clobClient.updateBalanceAllowance({
+        asset_type: AssetType.COLLATERAL
+      });
+      this.logger?.info("Balance/allowance cache synced.");
+      return true;
+    } catch (error) {
+      this.logger?.error("Failed to sync balance/allowance.", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return false;
+    }
+  }
+
+  async getUsdcBalance(syncFirst = true): Promise<{
+    balanceUsd: number;
+    allowanceUsd: number;
+    raw: unknown;
+  } | null> {
     if (!this.clobClient) {
       this.logger?.warn("Trading service not initialized.");
       return null;
+    }
+
+    if (syncFirst) {
+      await this.syncBalanceAllowance();
     }
 
     try {
@@ -78,7 +132,12 @@ export class PolymarketTradingService {
         asset_type: AssetType.COLLATERAL
       });
       const balanceNum = Number(balance?.balance ?? 0);
-      return balanceNum > 0 ? balanceNum / 1e6 : 0;
+      const allowanceNum = Number(balance?.allowances?.["0x"] ?? 0);
+      return {
+        balanceUsd: balanceNum / 1e6,
+        allowanceUsd: allowanceNum / 1e6,
+        raw: balance
+      };
     } catch (error) {
       this.logger?.error("Failed to get USDC balance.", {
         error: error instanceof Error ? error.message : String(error)
@@ -102,15 +161,14 @@ export class PolymarketTradingService {
     }
 
     try {
-      const balance = await this.clobClient.getBalanceAllowance({
-        asset_type: AssetType.COLLATERAL
-      });
-      const usdcBalance = Number(balance?.balance ?? 0) / 1e6;
-      if (usdcBalance < stakeUsd) {
-        return { success: false, error: `Insufficient USDC balance: ${usdcBalance.toFixed(2)} < ${stakeUsd}` };
+      const balanceInfo = await this.getUsdcBalance(true);
+      if (!balanceInfo) {
+        return { success: false, error: "Failed to fetch balance." };
       }
-      const currentAllowance = Number(balance?.allowances?.["0x"] ?? 0) / 1e6;
-      if (currentAllowance < stakeUsd) {
+      if (balanceInfo.balanceUsd < stakeUsd) {
+        return { success: false, error: `Insufficient USDC balance: ${balanceInfo.balanceUsd.toFixed(2)} < ${stakeUsd}` };
+      }
+      if (balanceInfo.allowanceUsd < stakeUsd) {
         this.logger?.info("Updating CLOB allowance...");
         await this.clobClient.updateBalanceAllowance({
           asset_type: AssetType.COLLATERAL
@@ -136,7 +194,7 @@ export class PolymarketTradingService {
         OrderType.GTC
       );
 
-      const orderId = response?.id ?? response?.orderId ?? null;
+      const orderId = response?.id ?? response?.orderId ?? response?.orderID ?? null;
       if (orderId) {
         this.logger?.info("Real order placed successfully.", {
           orderId,

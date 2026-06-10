@@ -63,6 +63,7 @@ export class CryptoMarketScannerJob {
   private readonly lastSignalByMarket = new Map<string, number>();
   private lastHeavyDiscoveryAt = 0;
   private readonly tradingService: PolymarketTradingService | null = null;
+  private forceTestTradeRemaining = config.forceTestTrade ? 1 : 0;
 
   constructor(private readonly logger: LoggerService) {
     this.polymarketService = new PolymarketService(this.polymarketClient, this.logger);
@@ -73,7 +74,11 @@ export class CryptoMarketScannerJob {
       const service = new PolymarketTradingService(
         config.polygonPrivateKey,
         config.addressWallet,
-        this.logger
+        this.logger,
+        config.polymarketApiKey ?? undefined,
+        config.polymarketSecret ?? undefined,
+        config.polymarketPassphrase ?? undefined,
+        config.polymarketFunderAddress ?? undefined
       );
       service.initialize().then((ok) => {
         if (ok) {
@@ -181,6 +186,33 @@ export class CryptoMarketScannerJob {
     const signalInput = this.toSignalInput(savedMarket.id, market, runtimeData);
     const signal = await this.signalEngine.generateSignal(signalInput);
     const riskAssessment = await this.riskService.evaluateSignal(signalInput, signal, savedMarket.category);
+
+    if (this.forceTestTradeRemaining > 0 && this.tradingService) {
+      let tradingReady = this.tradingService.isReady();
+      for (let i = 0; i < 15 && !tradingReady; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        tradingReady = this.tradingService.isReady();
+      }
+      if (tradingReady) {
+        const upPrice = runtimeData.upPrice;
+        const downPrice = runtimeData.downPrice;
+        if (upPrice !== null && downPrice !== null && upPrice > 0 && downPrice > 0) {
+          const predictedOutcome = upPrice >= downPrice ? "UP" : "DOWN";
+          const entryPrice = predictedOutcome === "UP" ? upPrice : downPrice;
+          signal.recommendation = "ENTER_SMALL";
+          signal.predictedOutcome = predictedOutcome;
+          signal.entryPrice = entryPrice;
+          signal.edge = Math.abs(upPrice - downPrice);
+          signal.reason = `FORCE_TEST_TRADE: ${predictedOutcome} at ${entryPrice.toFixed(2)}`;
+          (signal.features as Record<string, unknown>).entryRule = "ENTER_SMALL_STANDARD";
+          riskAssessment.allowed = true;
+          riskAssessment.reason = "FORCE_TEST_TRADE: bypassing risk for one-time test";
+          riskAssessment.riskLevel = "LOW";
+          this.forceTestTradeRemaining--;
+        }
+      }
+    }
+
     const shouldStoreFullOrderbook = signal.recommendation !== "AVOID";
     let simulationText = "No simulation created.";
     const hasOperationalStrategy = this.hasOperationalStrategy(market);
@@ -235,11 +267,13 @@ export class CryptoMarketScannerJob {
         (signal.recommendation === "ENTER_SMALL" || signal.recommendation === "ENTER_MODERATE") &&
         this.hasIdentifiedEntryRule(signal)
       ) {
+        const isForceTest = signal.reason?.startsWith("FORCE_TEST_TRADE:");
         const trade = await this.simulationService.createPendingSimulation(
           prediction.id,
           savedMarket.id,
           config.realStakeUsd,
-          signal.entryPrice
+          signal.entryPrice,
+          isForceTest
         );
         simulationText = `Pending simulated trade ${trade.id}, stake $${config.realStakeUsd}, shares ${trade.shares.toString()}.`;
 

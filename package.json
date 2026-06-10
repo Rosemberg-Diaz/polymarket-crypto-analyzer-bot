@@ -23,7 +23,9 @@
     "pm2:restart": "pm2 restart polymarket-crypto-analyzer-bot --update-env",
     "pm2:save": "pm2 save",
     "report": "tsx src/modules/reports/report.ts",
-    "export:ml-dataset": "tsx src/modules/learning/export-ml-dataset.ts"
+    "export:ml-dataset": "tsx src/modules/learning/export-ml-dataset.ts",
+    "generate:polymarket-api-keys": "tsx scripts/generate-polymarket-api-credentials.ts",
+    "check:polymarket-balance": "tsx scripts/check-polymarket-balance.ts"
   },
   "keywords": [
     "polymarket",
