@@ -7,6 +7,10 @@ import {
   SignalResult
 } from "../signal.types";
 
+const MAX_SECONDS_TO_CLOSE_FOR_STANDARD_ENTRY = 210;
+const CHEAP_DOWN_ENTRY_PRICE = 0.6;
+const CHEAP_DOWN_MIN_SECONDS_TO_CLOSE = 180;
+
 interface StrategyFeatures extends Record<string, unknown> {
   assetSymbol: string;
   marketType: string;
@@ -107,7 +111,9 @@ export class CryptoUpDownShortTermStrategy {
       volatilityPenalty,
       entryPrice
     });
+
     const edge = botProbability - impliedProbability;
+
     const recommendationDecision = decideRecommendation({
       edge,
       highEntryPrice,
@@ -120,8 +126,10 @@ export class CryptoUpDownShortTermStrategy {
       assetSymbol: input.assetSymbol,
       targetPriceTrustedForLearning: input.targetPriceTrustedForLearning === true
     });
+
     const recommendation = recommendationDecision.recommendation;
     const confidence = decideConfidence(edge, absDistancePercent, secondsToClose, input);
+
     const features = this.buildFeatures(
       input,
       distanceToTarget,
@@ -262,7 +270,10 @@ export class CryptoUpDownShortTermStrategy {
       momentumScore: round6(momentumScore),
       volatilityPenalty: round6(volatilityPenalty),
       strongDistance: distancePercent !== null && Math.abs(distancePercent) >= 0.004,
-      highEntryPrice: Boolean((input.upPrice !== null && input.upPrice > 0.82) || (input.downPrice !== null && input.downPrice > 0.82)),
+      highEntryPrice: Boolean(
+        (input.upPrice !== null && input.upPrice > 0.82) ||
+          (input.downPrice !== null && input.downPrice > 0.82)
+      ),
       targetPriceSource: input.targetPriceSource ?? null,
       targetPriceTrustedForLearning: input.targetPriceTrustedForLearning === true,
       entryRule
@@ -322,7 +333,9 @@ function calculateMomentumScore(input: SignalInput, predictedOutcome: PredictedO
 }
 
 function calculateVolatilityPenalty(input: SignalInput): number {
-  const values = [input.volatilityLast60s, input.volatilityLast120s].filter((value): value is number => value !== null);
+  const values = [input.volatilityLast60s, input.volatilityLast120s].filter(
+    (value): value is number => value !== null
+  );
 
   if (values.length === 0) {
     return 0.01;
@@ -353,6 +366,14 @@ function decideRecommendation(params: {
       recommendation: params.edge > 0 ? "WAIT" : "AVOID",
       entryRule: "NONE"
     };
+  }
+
+  if (isTooEarlyForStandardEntry(params)) {
+    return { recommendation: "WAIT", entryRule: "NONE" };
+  }
+
+  if (isCheapDownEarlyRisk(params)) {
+    return { recommendation: "WAIT", entryRule: "NONE" };
   }
 
   if (isStandardDownReversalRisk(params)) {
@@ -387,6 +408,22 @@ function decideRecommendation(params: {
     recommendation: params.strongDistance && params.secondsToClose < 60 ? "WAIT" : "AVOID",
     entryRule: "NONE"
   };
+}
+
+function isTooEarlyForStandardEntry(params: { secondsToClose: number }): boolean {
+  return params.secondsToClose > MAX_SECONDS_TO_CLOSE_FOR_STANDARD_ENTRY;
+}
+
+function isCheapDownEarlyRisk(params: {
+  predictedOutcome: PredictedOutcome;
+  secondsToClose: number;
+  entryPrice: number;
+}): boolean {
+  return (
+    params.predictedOutcome === "DOWN" &&
+    params.entryPrice < CHEAP_DOWN_ENTRY_PRICE &&
+    params.secondsToClose > CHEAP_DOWN_MIN_SECONDS_TO_CLOSE
+  );
 }
 
 function isStandardDownReversalRisk(params: {
@@ -442,12 +479,17 @@ function isLightEntrySetup(params: {
 function isOperationalLightEntrySetup(params: {
   assetSymbol: string;
   entryPrice: number;
+  secondsToClose: number;
+  predictedOutcome: PredictedOutcome;
 }): boolean {
-  if (params.assetSymbol === "SOL" && params.entryPrice >= 0.5 && params.entryPrice <= 0.69) {
-    return true;
-  }
-
-  return false;
+  return (
+    params.assetSymbol === "SOL" &&
+    params.predictedOutcome === "UP" &&
+    params.entryPrice >= 0.5 &&
+    params.entryPrice <= 0.69 &&
+    params.secondsToClose >= 60 &&
+    params.secondsToClose <= 120
+  );
 }
 
 function decideConfidence(
@@ -456,7 +498,10 @@ function decideConfidence(
   secondsToClose: number,
   input: SignalInput
 ): Confidence {
-  const hasMomentum = input.momentumLast30s !== null || input.momentumLast60s !== null || input.momentumLast120s !== null;
+  const hasMomentum =
+    input.momentumLast30s !== null ||
+    input.momentumLast60s !== null ||
+    input.momentumLast120s !== null;
 
   if (edge >= 0.08 && absDistancePercent >= 0.006 && secondsToClose < 120 && hasMomentum) {
     return "HIGH";

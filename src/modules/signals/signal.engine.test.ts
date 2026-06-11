@@ -63,11 +63,12 @@ describe("SignalEngine learning safeguards", () => {
       finalRecommendation: "WAIT",
       finalEntryRule: "NONE",
       confidenceAdjustment: 0.04,
-      similarCases: 30
+      similarCases: 30,
+      blockedByHistoricalGate: false
     });
   });
 
-  it("allows moderate candidates as real trades even when learning is negative", async () => {
+  it("blocks moderate candidates when comparable historical learning is negative", async () => {
     const engine = new SignalEngine(
       makeLearningService({
         totalSimilarCases: 25,
@@ -96,15 +97,24 @@ describe("SignalEngine learning safeguards", () => {
       })
     );
 
-    expect(signal.recommendation).toBe("ENTER_SMALL");
+    expect(signal.recommendation).toBe("WAIT");
+    expect(signal.confidence).toBe("LOW");
     expect(signal.features).toMatchObject({
-      entryRule: "ENTER_SMALL_LEARNING_DEFENSIVE",
+      entryRule: "NONE",
       baseRecommendation: "ENTER_MODERATE",
       baseEntryRule: "ENTER_MODERATE_STANDARD",
-      finalRecommendation: "ENTER_SMALL",
-      finalEntryRule: "ENTER_SMALL_LEARNING_DEFENSIVE",
-      confidenceAdjustment: -0.05
+      finalRecommendation: "WAIT",
+      finalEntryRule: "NONE",
+      similarCases: 25,
+      historicalWinRate: 0.4,
+      historicalProfit: -10,
+      confidenceAdjustment: 0,
+      blockedByHistoricalGate: true
     });
+
+    expect(String(signal.features.blockedReason)).toMatch(
+      /LOW_HISTORICAL_WIN_RATE|NON_POSITIVE_HISTORICAL_PROFIT/
+    );
   });
 
   it("keeps BTC LIGHT candidates observational even when learning is positive", async () => {
@@ -144,11 +154,12 @@ describe("SignalEngine learning safeguards", () => {
       baseEntryRule: "OBSERVE_SMALL_LIGHT",
       finalRecommendation: "WAIT",
       finalEntryRule: "OBSERVE_SMALL_LIGHT",
-      confidenceAdjustment: 0.03
+      confidenceAdjustment: 0.03,
+      blockedByHistoricalGate: false
     });
   });
 
-  it("keeps SOL LIGHT candidates observational like all other assets", async () => {
+  it("allows SOL LIGHT UP candidates when comparable historical learning is positive", async () => {
     const engine = new SignalEngine(
       makeLearningService({
         totalSimilarCases: 25,
@@ -178,14 +189,18 @@ describe("SignalEngine learning safeguards", () => {
       })
     );
 
-    expect(signal.recommendation).toBe("WAIT");
+    expect(signal.recommendation).toBe("ENTER_SMALL");
     expect(signal.features).toMatchObject({
-      entryRule: "OBSERVE_SMALL_LIGHT",
-      baseRecommendation: "WAIT",
-      baseEntryRule: "OBSERVE_SMALL_LIGHT",
-      finalRecommendation: "WAIT",
-      finalEntryRule: "OBSERVE_SMALL_LIGHT",
-      confidenceAdjustment: 0.03
+      entryRule: "ENTER_SMALL_LIGHT",
+      baseRecommendation: "ENTER_SMALL",
+      baseEntryRule: "ENTER_SMALL_LIGHT",
+      finalRecommendation: "ENTER_SMALL",
+      finalEntryRule: "ENTER_SMALL_LIGHT",
+      similarCases: 25,
+      historicalWinRate: 0.68,
+      historicalProfit: 12,
+      confidenceAdjustment: 0.03,
+      blockedByHistoricalGate: false
     });
   });
 });

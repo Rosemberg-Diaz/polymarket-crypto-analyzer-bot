@@ -1,11 +1,11 @@
-import path from "node:path";
+import * as path from "node:path";
 
 export const APP_NAME = "polymarket-crypto-analyzer-bot";
 
 export const DEFAULTS = {
   databaseUrl: "file:./dev.db",
   appMode: "SIMULATION_ONLY",
-  enableRealTrading: false,
+  enableRealTrading: true,
   scanIntervalSeconds: 10,
   simulatedStakeUsd: 5,
   realStakeUsd: 10,

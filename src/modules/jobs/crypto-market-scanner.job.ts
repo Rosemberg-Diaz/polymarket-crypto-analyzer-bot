@@ -19,8 +19,10 @@ import { RiskAssessment, RiskService } from "../risk/risk.service";
 import { SignalEngine } from "../signals/signal.engine";
 import { SignalInput, SignalResult } from "../signals/signal.types";
 import { ObservationEvaluationService } from "../simulations/observation-evaluation.service";
+import { ShortTermExitObservationService } from "../simulations/short-term-exit-observation.service";
 import { SimulationService } from "../simulations/simulation.service";
 import { PolymarketTradingService } from "../trading/polymarket-trading.service";
+import { RealOrderService } from "../trading/real-order.service";
 
 interface MarketRuntimeData {
   upPrice: number | null;
@@ -34,6 +36,8 @@ interface MarketRuntimeData {
   secondsToClose: number | null;
   orderbookSummary: Record<string, unknown> | null;
   rawOrderbook: unknown | null;
+  upOrderBook: PolymarketOrderBook | null;
+  downOrderBook: PolymarketOrderBook | null;
 }
 
 const DUPLICATE_SIGNAL_WINDOW_MS = 30 * 1000;
@@ -48,7 +52,7 @@ const HEAVY_DISCOVERY_SCAN_INTERVAL_MS = 60 * 1000;
 const UP_DOWN_TARGET_CAPTURE_WINDOW_MS = 60 * 1000;
 const UP_DOWN_5M_WINDOW_MS = 5 * 60 * 1000;
 const MIN_SECONDS_TO_CLOSE_FOR_OPERATIONAL_SIGNAL = 20;
-const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL", "XRP", "DOGE", "AVAX", "BNB"]);
+const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]);
 
 export class CryptoMarketScannerJob {
   private readonly polymarketClient = new PolymarketClient();
@@ -60,15 +64,18 @@ export class CryptoMarketScannerJob {
   private readonly featureBuilderService = new FeatureBuilderService();
   private readonly officialTargetResolverService: OfficialTargetResolverService;
   private readonly cryptoPriceService: CryptoPriceService;
+  private readonly shortTermExitObservationService: ShortTermExitObservationService;
   private readonly lastSignalByMarket = new Map<string, number>();
   private lastHeavyDiscoveryAt = 0;
   private readonly tradingService: PolymarketTradingService | null = null;
+  private readonly realOrderService = new RealOrderService();
   private forceTestTradeRemaining = config.forceTestTrade ? 1 : 0;
 
   constructor(private readonly logger: LoggerService) {
     this.polymarketService = new PolymarketService(this.polymarketClient, this.logger);
     this.officialTargetResolverService = new OfficialTargetResolverService(this.logger);
     this.cryptoPriceService = new CryptoPriceService(this.logger);
+    this.shortTermExitObservationService = new ShortTermExitObservationService(this.logger);
 
     if (config.enableRealTrading && config.polygonPrivateKey && config.addressWallet) {
       const service = new PolymarketTradingService(
@@ -80,11 +87,13 @@ export class CryptoMarketScannerJob {
         config.polymarketPassphrase ?? undefined,
         config.polymarketFunderAddress ?? undefined
       );
+
       service.initialize().then((ok) => {
         if (ok) {
           this.logger.info("Real-money trading service is ready.");
         }
       });
+
       this.tradingService = service;
     }
   }
@@ -113,9 +122,13 @@ export class CryptoMarketScannerJob {
       });
     }
 
-    const heavyQueue = this.buildScanQueue([], heavyMarkets)
-      .filter((market) => !processedMarketKeys.has(this.getMarketKey(market)));
+    const heavyQueue = this.buildScanQueue([], heavyMarkets).filter(
+      (market) => !processedMarketKeys.has(this.getMarketKey(market))
+    );
+
     processedMarkets += await this.processMarkets(heavyQueue);
+    const closedShortTermObservations =
+      await this.shortTermExitObservationService.closeExpiredObservations();
 
     if (processedMarkets === 0) {
       this.logger.warn("No active crypto markets found from Polymarket.");
@@ -125,7 +138,8 @@ export class CryptoMarketScannerJob {
     this.logger.info("Crypto market scanner finished.", {
       fastMarkets: fastMarkets.length,
       heavyMarkets: heavyMarkets.length,
-      processedMarkets
+      processedMarkets,
+      closedShortTermObservations
     });
   }
 
@@ -181,6 +195,22 @@ export class CryptoMarketScannerJob {
     }
 
     const runtimeData = await this.loadRuntimeData(normalizedMarket);
+    try {
+      await this.shortTermExitObservationService.observeMarket({
+        marketId: savedMarket.id,
+        assetSymbol: normalizedMarket.assetSymbol,
+        liquidity: runtimeData.liquidity,
+        secondsToClose: runtimeData.secondsToClose,
+        upOrderBook: runtimeData.upOrderBook,
+        downOrderBook: runtimeData.downOrderBook
+      });
+    } catch (error) {
+      this.logger.error("Short-term exit observation failed; regular scanner will continue.", error, {
+        marketId: savedMarket.id,
+        assetSymbol: normalizedMarket.assetSymbol
+      });
+    }
+
     const market = await this.resolveUpDownTargetPrice(savedMarket.id, normalizedMarket, runtimeData);
     const marketKey = this.getMarketKey(market);
     const signalInput = this.toSignalInput(savedMarket.id, market, runtimeData);
@@ -189,25 +219,33 @@ export class CryptoMarketScannerJob {
 
     if (this.forceTestTradeRemaining > 0 && this.tradingService) {
       let tradingReady = this.tradingService.isReady();
+
       for (let i = 0; i < 15 && !tradingReady; i++) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         tradingReady = this.tradingService.isReady();
       }
+
       if (tradingReady) {
         const upPrice = runtimeData.upPrice;
         const downPrice = runtimeData.downPrice;
+
         if (upPrice !== null && downPrice !== null && upPrice > 0 && downPrice > 0) {
           const predictedOutcome = upPrice >= downPrice ? "UP" : "DOWN";
           const entryPrice = predictedOutcome === "UP" ? upPrice : downPrice;
+
           signal.recommendation = "ENTER_SMALL";
           signal.predictedOutcome = predictedOutcome;
           signal.entryPrice = entryPrice;
           signal.edge = Math.abs(upPrice - downPrice);
           signal.reason = `FORCE_TEST_TRADE: ${predictedOutcome} at ${entryPrice.toFixed(2)}`;
+
           (signal.features as Record<string, unknown>).entryRule = "ENTER_SMALL_STANDARD";
+          (signal.features as Record<string, unknown>).forceTestTrade = true;
+
           riskAssessment.allowed = true;
           riskAssessment.reason = "FORCE_TEST_TRADE: bypassing risk for one-time test";
           riskAssessment.riskLevel = "LOW";
+
           this.forceTestTradeRemaining--;
         }
       }
@@ -222,8 +260,14 @@ export class CryptoMarketScannerJob {
     } else {
       const shouldStorePrediction =
         !this.isTooLateForOperationalPrediction(signal, runtimeData) &&
-        await this.shouldStorePrediction(savedMarket.id, signal);
-      const shouldStoreSnapshot = await this.shouldStoreSnapshot(savedMarket.id, runtimeData, signal, shouldStorePrediction);
+        (await this.shouldStorePrediction(savedMarket.id, signal));
+
+      const shouldStoreSnapshot = await this.shouldStoreSnapshot(
+        savedMarket.id,
+        runtimeData,
+        signal,
+        shouldStorePrediction
+      );
 
       if (!shouldStoreSnapshot) {
         simulationText = "Observation skipped; repeated WAIT without material price change.";
@@ -231,12 +275,7 @@ export class CryptoMarketScannerJob {
         return;
       }
 
-      const snapshot = await this.createSnapshot(
-        savedMarket.id,
-        market,
-        runtimeData,
-        shouldStoreFullOrderbook
-      );
+      const snapshot = await this.createSnapshot(savedMarket.id, market, runtimeData, shouldStoreFullOrderbook);
 
       if (!shouldStorePrediction) {
         simulationText = this.getSkippedPredictionReason(signal, runtimeData);
@@ -246,9 +285,44 @@ export class CryptoMarketScannerJob {
 
       const prediction = await this.createPrediction(savedMarket.id, snapshot.id, market, signalInput, signal);
       this.lastSignalByMarket.set(marketKey, Date.now());
-      const entryRule = this.getEntryRule(signal);
 
-      if (this.isObservationRule(entryRule) && riskAssessment.allowed) {
+      const entryRule = this.getEntryRule(signal);
+      const historicalGateObservationType = this.getHistoricalGateObservationType(signal);
+
+      if (historicalGateObservationType) {
+        const staticRiskAssessment = this.riskService.evaluateStaticSimulationRequest({
+          marketId: savedMarket.id,
+          marketCategory: market.category,
+          assetSymbol: market.assetSymbol,
+          marketType: market.marketType,
+          entryPrice: signal.entryPrice,
+          spread: signalInput.spread,
+          liquidity: signalInput.liquidity,
+          secondsToClose: signalInput.secondsToClose,
+          targetPrice: signalInput.targetPrice,
+          currentAssetPrice: signalInput.currentAssetPrice,
+          recommendation: signal.recommendation,
+          predictedOutcome: signal.predictedOutcome
+        });
+
+        if (staticRiskAssessment.allowed) {
+          const observation = await this.observationEvaluationService.createPendingObservation(
+            prediction.id,
+            savedMarket.id,
+            historicalGateObservationType,
+            config.simulatedStakeUsd,
+            signal.entryPrice
+          );
+
+          simulationText =
+            `Historical-gate simulation ${observation.id}, stake $${config.simulatedStakeUsd}, ` +
+            `shares ${observation.shares.toString()}.`;
+        } else {
+          simulationText =
+            `Historical-gate simulation blocked by static risk: ${staticRiskAssessment.reason} ` +
+            `(${staticRiskAssessment.riskLevel}).`;
+        }
+      } else if (this.isObservationRule(entryRule) && riskAssessment.allowed) {
         const observation = await this.observationEvaluationService.createPendingObservation(
           prediction.id,
           savedMarket.id,
@@ -256,6 +330,7 @@ export class CryptoMarketScannerJob {
           config.simulatedStakeUsd,
           signal.entryPrice
         );
+
         simulationText =
           `Shadow observation ${observation.id}, hypothetical stake $${config.simulatedStakeUsd}, ` +
           `shares ${observation.shares.toString()}.`;
@@ -268,6 +343,7 @@ export class CryptoMarketScannerJob {
         this.hasIdentifiedEntryRule(signal)
       ) {
         const isForceTest = signal.reason?.startsWith("FORCE_TEST_TRADE:");
+
         const trade = await this.simulationService.createPendingSimulation(
           prediction.id,
           savedMarket.id,
@@ -275,19 +351,39 @@ export class CryptoMarketScannerJob {
           signal.entryPrice,
           isForceTest
         );
-        simulationText = `Pending simulated trade ${trade.id}, stake $${config.realStakeUsd}, shares ${trade.shares.toString()}.`;
+
+        simulationText =
+          `Pending simulated trade ${trade.id}, stake $${config.realStakeUsd}, ` +
+          `shares ${trade.shares.toString()}.`;
 
         if (config.enableRealTrading && this.tradingService) {
+          const realOrderAttempt = await this.realOrderService.createAttempt({
+            predictionId: prediction.id,
+            simulatedTradeId: trade.id,
+            marketId: savedMarket.id,
+            assetSymbol: market.assetSymbol,
+            marketType: market.marketType,
+            predictedOutcome: signal.predictedOutcome,
+            entryRule,
+            stake: config.realStakeUsd,
+            requestedPrice: signal.entryPrice
+          });
+
           const result = await this.tradingService.placeOrder(
             market,
             config.realStakeUsd,
             signal.entryPrice,
-            signal.predictedOutcome as "UP" | "DOWN"
+            signal.predictedOutcome as "UP" | "DOWN",
+            signal
           );
-          if (result.success) {
+
+          if (result.success && result.orderId) {
+            await this.realOrderService.markSubmitted(realOrderAttempt.id, result.orderId);
             simulationText += ` | Real order placed: ${result.orderId}`;
           } else {
-            simulationText += ` | Real order FAILED: ${result.error}`;
+            const errorMessage = result.error ?? "Order placement returned no order ID.";
+            await this.realOrderService.markFailed(realOrderAttempt.id, errorMessage);
+            simulationText += ` | Real order FAILED: ${errorMessage}`;
           }
         }
       } else if (!riskAssessment.allowed) {
@@ -366,18 +462,25 @@ export class CryptoMarketScannerJob {
   private async loadRuntimeData(market: NormalizedCryptoMarket): Promise<MarketRuntimeData> {
     const upOutcome = findOutcome(market, ["UP", "YES"]);
     const downOutcome = findOutcome(market, ["DOWN", "NO"]);
+
     const upPrice = await this.getOutcomePrice(upOutcome);
     const downPrice = await this.getOutcomePrice(downOutcome);
+
     const spreads = await Promise.all([
       upOutcome?.externalTokenId ? this.polymarketClient.getSpread(upOutcome.externalTokenId) : null,
       downOutcome?.externalTokenId ? this.polymarketClient.getSpread(downOutcome.externalTokenId) : null
     ]);
+
     const orderbooks = await Promise.all([
       upOutcome?.externalTokenId ? this.polymarketClient.getOrderBook(upOutcome.externalTokenId) : null,
       downOutcome?.externalTokenId ? this.polymarketClient.getOrderBook(downOutcome.externalTokenId) : null
     ]);
+
     const spotPrice = await this.cryptoPriceService.getSpotPriceUsd(market.assetSymbol);
-    const spreadValues = spreads.flatMap((spread) => (spread?.spread === null || spread?.spread === undefined ? [] : [spread.spread]));
+
+    const spreadValues = spreads.flatMap((spread) =>
+      spread?.spread === null || spread?.spread === undefined ? [] : [spread.spread]
+    );
 
     return {
       upPrice,
@@ -388,7 +491,9 @@ export class CryptoMarketScannerJob {
       liquidity: extractMarketNumber(market.rawData, ["liquidity", "liquidityNum", "liquidityClob", "liquidity_usd"]),
       volume: extractMarketNumber(market.rawData, ["volume", "volumeNum", "volumeClob", "volume_24hr"]),
       currentAssetPrice: spotPrice.priceUsd,
-      secondsToClose: market.endDate ? Math.max(0, Math.floor((market.endDate.getTime() - Date.now()) / 1000)) : null,
+      secondsToClose: market.endDate
+        ? Math.max(0, Math.floor((market.endDate.getTime() - Date.now()) / 1000))
+        : null,
       orderbookSummary: {
         orderbooks: summarizeOrderbooks(orderbooks),
         spotPrice: {
@@ -400,7 +505,9 @@ export class CryptoMarketScannerJob {
       rawOrderbook: {
         up: orderbooks[0]?.raw ?? null,
         down: orderbooks[1]?.raw ?? null
-      }
+      },
+      upOrderBook: orderbooks[0],
+      downOrderBook: orderbooks[1]
     };
   }
 
@@ -479,6 +586,7 @@ export class CryptoMarketScannerJob {
     }
 
     const officialTarget = await this.officialTargetResolverService.resolveOfficialTarget(market);
+
     if (
       officialTarget.targetPrice !== null &&
       officialTarget.trustedForLearning &&
@@ -565,6 +673,7 @@ export class CryptoMarketScannerJob {
       market.targetPrice !== null && runtimeData.currentAssetPrice !== null
         ? runtimeData.currentAssetPrice - market.targetPrice
         : null;
+
     const distanceToTargetPercent =
       distanceToTarget !== null && market.targetPrice !== null && market.targetPrice > 0
         ? distanceToTarget / market.targetPrice
@@ -816,6 +925,10 @@ export class CryptoMarketScannerJob {
     return entryRule.startsWith("OBSERVE_");
   }
 
+  private getHistoricalGateObservationType(signal: SignalResult): string | null {
+    return getHistoricalGateObservationType(signal);
+  }
+
   private isTooLateForOperationalPrediction(signal: SignalResult, runtimeData: MarketRuntimeData): boolean {
     return (
       (signal.recommendation === "ENTER_SMALL" || signal.recommendation === "ENTER_MODERATE") &&
@@ -854,6 +967,7 @@ export class CryptoMarketScannerJob {
     }
 
     const windowStart = inferUpDownWindowStart(market);
+
     if (!windowStart) {
       return false;
     }
@@ -886,6 +1000,7 @@ export class CryptoMarketScannerJob {
     ].join(" | ");
 
     console.log(output);
+
     this.logger.info("Real Polymarket crypto market scanned.", {
       market: market.question,
       asset: market.assetSymbol,
@@ -949,9 +1064,14 @@ function getBestLevel(summary: Record<string, unknown> | null, side: "bids" | "a
     summary.orderbooks && typeof summary.orderbooks === "object"
       ? (summary.orderbooks as Record<string, unknown>)
       : summary;
-  const books = [orderbookSummary.up, orderbookSummary.down].filter((book): book is Record<string, unknown> => Boolean(book));
+
+  const books = [orderbookSummary.up, orderbookSummary.down].filter(
+    (book): book is Record<string, unknown> => Boolean(book)
+  );
+
   const prices = books.flatMap((book) => {
     const levels = book[side];
+
     if (!Array.isArray(levels)) {
       return [];
     }
@@ -1078,11 +1198,13 @@ function confidenceToScore(confidence: SignalResult["confidence"]): number {
 function extractMarketNumber(rawData: string, keys: string[]): number | null {
   try {
     const parsed = JSON.parse(rawData) as unknown;
+
     if (!parsed || typeof parsed !== "object") {
       return null;
     }
 
     const record = parsed as Record<string, unknown>;
+
     for (const key of keys) {
       const value = record[key];
       const numericValue = Number(value);
@@ -1125,8 +1247,10 @@ function withCapturedTarget(
 
 function inferUpDownWindowStart(market: NormalizedCryptoMarket): Date | null {
   const slugTimestamp = market.slug?.match(/-(\d{10})$/)?.[1];
+
   if (slugTimestamp) {
     const timestamp = Number(slugTimestamp);
+
     if (Number.isFinite(timestamp) && timestamp > 0) {
       return new Date(timestamp * 1000);
     }
@@ -1142,6 +1266,7 @@ function inferUpDownWindowStart(market: NormalizedCryptoMarket): Date | null {
 function parseJsonRecord(value: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value) as unknown;
+
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : {};
@@ -1153,6 +1278,7 @@ function parseJsonRecord(value: string): Record<string, unknown> {
 function getTargetPriceSource(rawData: string): string | null {
   const record = parseJsonRecord(rawData);
   const topLevelSource = record.targetPriceSource;
+
   if (typeof topLevelSource === "string") {
     return topLevelSource;
   }
@@ -1165,6 +1291,7 @@ function getTargetPriceSource(rawData: string): string | null {
   }
 
   const mappedTargetPrice = record.mappedTargetPrice;
+
   if (mappedTargetPrice && typeof mappedTargetPrice === "object") {
     const source = (mappedTargetPrice as Record<string, unknown>).source;
     return typeof source === "string" ? source : null;
@@ -1175,6 +1302,7 @@ function getTargetPriceSource(rawData: string): string | null {
 
 function getTargetPriceTrustedForLearning(rawData: string): boolean {
   const record = parseJsonRecord(rawData);
+
   if (record.targetPriceTrustedForLearning === true) {
     return true;
   }
@@ -1186,6 +1314,7 @@ function getTargetPriceTrustedForLearning(rawData: string): boolean {
   }
 
   const mappedTargetPrice = record.mappedTargetPrice;
+
   if (mappedTargetPrice && typeof mappedTargetPrice === "object") {
     return (mappedTargetPrice as Record<string, unknown>).trustedForLearning === true;
   }
@@ -1194,11 +1323,38 @@ function getTargetPriceTrustedForLearning(rawData: string): boolean {
 }
 
 export function hasPersistablePredictionRule(signal: SignalResult): boolean {
-  const entryRule = (signal.features as Record<string, unknown>).entryRule;
+  const features = signal.features as Record<string, unknown>;
+  const entryRule = features.entryRule;
+
   return (
-    typeof entryRule === "string" &&
-    (entryRule.startsWith("ENTER_") || entryRule.startsWith("OBSERVE_"))
+    (typeof entryRule === "string" &&
+      (entryRule.startsWith("ENTER_") || entryRule.startsWith("OBSERVE_"))) ||
+    getHistoricalGateObservationType(signal) !== null
   );
+}
+
+const OBSERVABLE_HISTORICAL_GATE_RULES = new Set([
+  "ENTER_SMALL_STANDARD",
+  "ENTER_MODERATE_STANDARD"
+]);
+
+export function getHistoricalGateObservationType(signal: SignalResult): string | null {
+  const features = signal.features as Record<string, unknown>;
+  const baseEntryRule = features.baseEntryRule;
+  const blockedReason = features.blockedReason;
+
+  if (
+    features.blockedByHistoricalGate !== true ||
+    typeof baseEntryRule !== "string" ||
+    !OBSERVABLE_HISTORICAL_GATE_RULES.has(baseEntryRule) ||
+    typeof blockedReason !== "string" ||
+    blockedReason.length === 0
+  ) {
+    return null;
+  }
+
+  const normalizedReason = blockedReason.replace(/[^A-Z0-9_]/gi, "_").toUpperCase();
+  return `OBSERVE_HISTORICAL_GATE_${baseEntryRule}_${normalizedReason}`;
 }
 
 function isTrustedTargetSource(source: string): boolean {
@@ -1212,6 +1368,7 @@ function isTrustedTargetSource(source: string): boolean {
 function stringifyWithLimit(value: unknown, maxLength = 20_000): string {
   try {
     const serialized = JSON.stringify(value);
+
     if (serialized.length <= maxLength) {
       return serialized;
     }

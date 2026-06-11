@@ -8,6 +8,15 @@ import { LearningService } from "../learning/learning.service";
 import { CryptoUpDownShortTermStrategy } from "./strategies/crypto-up-down-short-term.strategy";
 import { Confidence, Recommendation, SignalInput, SignalResult } from "./signal.types";
 
+const REAL_GATE_MIN_SIMILAR_CASES = 5;
+const REAL_GATE_MIN_WIN_RATE = 0.6;
+const REAL_GATE_MIN_TOTAL_PROFIT = 0;
+const REAL_GATE_MAX_SECONDS_TO_CLOSE = 210;
+const REAL_GATE_CHEAP_DOWN_ENTRY_PRICE = 0.6;
+const REAL_GATE_CHEAP_DOWN_MIN_SECONDS_TO_CLOSE = 180;
+
+type HistoricalPerformanceForGate = Awaited<ReturnType<LearningService["findSimilarHistoricalPerformance"]>>;
+
 export class SignalEngine {
   private readonly upDownShortTermStrategy = new CryptoUpDownShortTermStrategy();
 
@@ -58,6 +67,7 @@ export class SignalEngine {
   private async applyLearning(input: SignalInput, signal: SignalResult): Promise<SignalResult> {
     const baseRecommendation = signal.recommendation;
     const baseEntryRule = getEntryRule(signal.features);
+
     const performance = await this.learningService.findSimilarHistoricalPerformance({
       strategyName: signal.strategyName,
       marketType: input.marketType,
@@ -74,6 +84,19 @@ export class SignalEngine {
       timeframe: input.timeframe
     });
 
+    const historicalGate = validateEntryAgainstHistoricalRegime(input, signal, baseEntryRule, performance);
+
+    if (!historicalGate.allowed) {
+      return blockEntryWithLearningReason(
+        signal,
+        baseRecommendation,
+        baseEntryRule,
+        performance,
+        historicalGate.blockedReason,
+        historicalGate.reason
+      );
+    }
+
     if (performance.confidenceAdjustment === 0) {
       return {
         ...signal,
@@ -87,7 +110,10 @@ export class SignalEngine {
           finalEntryRule: baseEntryRule,
           similarCases: performance.totalSimilarCases,
           historicalWinRate: performance.winRate,
-          historicalProfit: performance.totalProfit
+          historicalProfit: performance.totalProfit,
+          historicalAverageRoi: performance.averageRoi,
+          confidenceAdjustment: 0,
+          blockedByHistoricalGate: false
         }
       };
     }
@@ -120,7 +146,9 @@ export class SignalEngine {
         similarCases: performance.totalSimilarCases,
         historicalWinRate: performance.winRate,
         historicalProfit: performance.totalProfit,
-        confidenceAdjustment: performance.confidenceAdjustment
+        historicalAverageRoi: performance.averageRoi,
+        confidenceAdjustment: performance.confidenceAdjustment,
+        blockedByHistoricalGate: false
       }
     };
   }
@@ -151,6 +179,114 @@ function createAvoidSignal(strategyName: string, reason: string): SignalResult {
     },
     confidenceAdjustment: 0,
     historicalSummary: "Esta senal no ha sido comparada todavia contra casos historicos similares."
+  };
+}
+
+function isEntryRecommendation(recommendation: Recommendation): boolean {
+  return recommendation === "ENTER_SMALL" || recommendation === "ENTER_MODERATE";
+}
+
+function validateEntryAgainstHistoricalRegime(
+  input: SignalInput,
+  signal: SignalResult,
+  baseEntryRule: string,
+  performance: HistoricalPerformanceForGate
+): { allowed: true } | { allowed: false; blockedReason: string; reason: string } {
+  if (!isEntryRecommendation(signal.recommendation)) {
+    return { allowed: true };
+  }
+
+  if (!baseEntryRule.startsWith("ENTER_")) {
+    return { allowed: true };
+  }
+
+  const secondsToClose = input.secondsToClose ?? 0;
+
+  if (secondsToClose > REAL_GATE_MAX_SECONDS_TO_CLOSE) {
+    return {
+      allowed: false,
+      blockedReason: "TOO_EARLY_FOR_REAL_ENTRY",
+      reason: `faltan ${secondsToClose}s para cerrar; maximo permitido ${REAL_GATE_MAX_SECONDS_TO_CLOSE}s`
+    };
+  }
+
+  if (
+    signal.predictedOutcome === "DOWN" &&
+    signal.entryPrice < REAL_GATE_CHEAP_DOWN_ENTRY_PRICE &&
+    secondsToClose > REAL_GATE_CHEAP_DOWN_MIN_SECONDS_TO_CLOSE
+  ) {
+    return {
+      allowed: false,
+      blockedReason: "CHEAP_DOWN_EARLY_RISK",
+      reason:
+        `DOWN barato y temprano: entryPrice=${signal.entryPrice}, secondsToClose=${secondsToClose}. ` +
+        "Ese patron explico la mayor parte de las perdidas recientes."
+    };
+  }
+
+  if (performance.totalSimilarCases < REAL_GATE_MIN_SIMILAR_CASES) {
+    return {
+      allowed: false,
+      blockedReason: "INSUFFICIENT_SIMILAR_CASES",
+      reason:
+        `solo hay ${performance.totalSimilarCases} casos similares; ` +
+        `minimo requerido ${REAL_GATE_MIN_SIMILAR_CASES}`
+    };
+  }
+
+  if (performance.winRate < REAL_GATE_MIN_WIN_RATE) {
+    return {
+      allowed: false,
+      blockedReason: "LOW_HISTORICAL_WIN_RATE",
+      reason:
+        `win rate historico comparable ${(performance.winRate * 100).toFixed(2)}%; ` +
+        `minimo requerido ${(REAL_GATE_MIN_WIN_RATE * 100).toFixed(2)}%`
+    };
+  }
+
+  if (performance.totalProfit <= REAL_GATE_MIN_TOTAL_PROFIT) {
+    return {
+      allowed: false,
+      blockedReason: "NON_POSITIVE_HISTORICAL_PROFIT",
+      reason:
+        `profit historico comparable ${performance.totalProfit}; ` +
+        `debe ser mayor a ${REAL_GATE_MIN_TOTAL_PROFIT}`
+    };
+  }
+
+  return { allowed: true };
+}
+
+function blockEntryWithLearningReason(
+  signal: SignalResult,
+  baseRecommendation: Recommendation,
+  baseEntryRule: string,
+  performance: HistoricalPerformanceForGate,
+  blockedReason: string,
+  blockReason: string
+): SignalResult {
+  return {
+    ...signal,
+    recommendation: "WAIT",
+    confidence: "LOW",
+    reason: `${signal.reason} ${performance.historicalSummary} Bloqueado: ${blockReason}.`,
+    historicalSummary: performance.historicalSummary,
+    confidenceAdjustment: 0,
+    features: {
+      ...signal.features,
+      entryRule: "NONE",
+      baseRecommendation,
+      baseEntryRule,
+      finalRecommendation: "WAIT",
+      finalEntryRule: "NONE",
+      similarCases: performance.totalSimilarCases,
+      historicalWinRate: performance.winRate,
+      historicalProfit: performance.totalProfit,
+      historicalAverageRoi: performance.averageRoi,
+      confidenceAdjustment: 0,
+      blockedReason,
+      blockedByHistoricalGate: true
+    }
   };
 }
 

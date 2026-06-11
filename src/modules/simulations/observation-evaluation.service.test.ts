@@ -26,10 +26,7 @@ describe("ObservationEvaluationService", () => {
     expect(prisma.observationEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          marketId_observationType: {
-            marketId: "market-1",
-            observationType: "OBSERVE_MODERATE_STANDARD"
-          }
+          predictionId: "prediction-1"
         },
         create: expect.objectContaining({
           observationType: "OBSERVE_MODERATE_STANDARD",
@@ -54,10 +51,7 @@ describe("ObservationEvaluationService", () => {
     expect(prisma.observationEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          marketId_observationType: {
-            marketId: "market-1",
-            observationType: "OBSERVE_SMALL_LIGHT"
-          }
+          predictionId: "prediction-light"
         },
         create: expect.objectContaining({
           observationType: "OBSERVE_SMALL_LIGHT",

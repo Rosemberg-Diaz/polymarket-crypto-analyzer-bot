@@ -30,7 +30,9 @@ model Market {
   snapshots        MarketSnapshot[]
   predictions      BotPrediction[]
   simulatedTrades  SimulatedTrade[]
+  realOrders       RealOrder[]
   observationEvaluations ObservationEvaluation[]
+  shortTermExitObservations ShortTermExitObservation[]
 
   @@index([assetSymbol])
   @@index([marketType])
@@ -106,6 +108,7 @@ model BotPrediction {
   historicalSummary  String?
   createdAt          DateTime         @default(now())
   simulatedTrades    SimulatedTrade[]
+  realOrders          RealOrder[]
   observationEvaluation ObservationEvaluation?
 
   @@index([marketId])
@@ -134,12 +137,47 @@ model SimulatedTrade {
   resolvedAt   DateTime?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
+  realOrders   RealOrder[]
 
   @@index([predictionId])
   @@index([marketId])
   @@index([status])
   @@index([createdAt])
   @@index([resolvedAt])
+}
+
+model RealOrder {
+  id                 String          @id @default(cuid())
+  predictionId       String
+  prediction         BotPrediction   @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+  simulatedTradeId   String?
+  simulatedTrade     SimulatedTrade? @relation(fields: [simulatedTradeId], references: [id], onDelete: SetNull)
+  marketId           String
+  market              Market          @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  externalOrderId    String?          @unique
+  assetSymbol        String
+  marketType         String
+  predictedOutcome   String
+  entryRule          String
+  stake              Decimal
+  requestedPrice     Decimal
+  requestedShares    Decimal
+  status             String
+  errorMessage       String?
+  responseData       String?
+  submittedAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@index([predictionId])
+  @@index([simulatedTradeId])
+  @@index([marketId])
+  @@index([assetSymbol])
+  @@index([marketType])
+  @@index([entryRule])
+  @@index([status])
+  @@index([submittedAt])
+  @@index([createdAt])
 }
 
 model ObservationEvaluation {
@@ -164,11 +202,74 @@ model ObservationEvaluation {
   updatedAt        DateTime      @updatedAt
 
   @@index([marketId])
-  @@unique([marketId, observationType])
   @@index([observationType])
   @@index([status])
   @@index([createdAt])
   @@index([resolvedAt])
+}
+
+model ShortTermExitObservation {
+  id                    String   @id @default(cuid())
+  marketId              String
+  market                Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  assetSymbol           String
+  outcome               String
+  status                String   @default("OPEN")
+  stake                 Decimal
+  entryAsk              Decimal
+  entryBid              Decimal
+  entrySpread           Decimal
+  shares                Decimal
+  buyFee                Decimal
+  entrySecondsToClose   Int
+  maxExecutableBid      Decimal
+  minExecutableBid      Decimal
+  maxNetRoi             Decimal  @default(0)
+  minNetRoi             Decimal  @default(0)
+  firstTakeProfit2At    DateTime?
+  firstTakeProfit5At    DateTime?
+  firstTakeProfit10At   DateTime?
+  firstStopLoss3At      DateTime?
+  firstStopLoss5At      DateTime?
+  firstStopLoss10At     DateTime?
+  exitBid               Decimal?
+  sellFee               Decimal?
+  finalValue            Decimal?
+  profit                Decimal?
+  roi                   Decimal?
+  exitReason            String?
+  exitedAt              DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  quotes                ShortTermExitQuote[]
+
+  @@unique([marketId, outcome])
+  @@index([assetSymbol])
+  @@index([outcome])
+  @@index([status])
+  @@index([createdAt])
+  @@index([exitedAt])
+}
+
+model ShortTermExitQuote {
+  id              String                   @id @default(cuid())
+  observationId   String
+  observation     ShortTermExitObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  bestBid         Decimal
+  bidSize         Decimal
+  bestAsk         Decimal
+  askSize         Decimal
+  spread          Decimal
+  liquidity       Decimal
+  secondsToClose  Int
+  netExitValue    Decimal
+  netProfit       Decimal
+  netRoi          Decimal
+  executable      Boolean                  @default(true)
+  createdAt       DateTime                 @default(now())
+
+  @@index([observationId])
+  @@index([createdAt])
 }
 
 model LearningStat {

@@ -75,7 +75,7 @@ describe("RiskService", () => {
   });
 
   it("blocks assets outside priority assets", async () => {
-    const result = await service.evaluateSimulationRequest(makeRiskInput({ assetSymbol: "XRP" }));
+    const result = await service.evaluateSimulationRequest(makeRiskInput({ assetSymbol: "AVAX" }));
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("PRIORITY_ASSETS");
   });

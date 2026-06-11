@@ -6,6 +6,9 @@ vi.mock("../../database/client", () => ({
   prisma: {
     simulatedTrade: {
       findMany: vi.fn()
+    },
+    observationEvaluation: {
+      findMany: vi.fn()
     }
   }
 }));
@@ -53,15 +56,75 @@ function makeTrade(isWin: boolean, profit: number, roi: number) {
 describe("LearningService", () => {
   beforeEach(() => {
     vi.mocked(prisma.simulatedTrade.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.observationEvaluation.findMany).mockResolvedValue([]);
   });
 
-  it("does not adjust with fewer than 20 similar cases", async () => {
+  it("counts resolved historical-gate observations as similar evidence", async () => {
     vi.mocked(prisma.simulatedTrade.findMany).mockResolvedValue(
-      Array.from({ length: 10 }, () => makeTrade(true, 1, 0.1)) as never
+      Array.from({ length: 4 }, () => makeTrade(true, 1, 0.1)) as never
+    );
+    vi.mocked(prisma.observationEvaluation.findMany).mockResolvedValue([
+      {
+        wouldWin: true,
+        hypotheticalProfit: 1,
+        hypotheticalRoi: 0.1,
+        entryPrice: 0.5,
+        prediction: makeTrade(true, 1, 0.1).prediction
+      }
+    ] as never);
+
+    const result = await service.findSimilarHistoricalPerformance(baseFeatures);
+
+    expect(result.totalSimilarCases).toBe(5);
+    expect(result.wins).toBe(5);
+    expect(result.totalProfit).toBe(5);
+  });
+
+  it("includes a case exactly on an absolute tolerance boundary", async () => {
+    vi.mocked(prisma.observationEvaluation.findMany).mockResolvedValue([
+      {
+        wouldWin: true,
+        hypotheticalProfit: 1,
+        hypotheticalRoi: 0.2,
+        entryPrice: 0.61,
+        prediction: {
+          features: JSON.stringify({
+            targetPriceSource: "POLYMARKET_RTDS_CHAINLINK",
+            targetPriceTrustedForLearning: true,
+            distanceToTargetPercent: -0.01
+          }),
+          snapshot: {
+            secondsToClose: 175,
+            distanceToTarget: -0.65,
+            spread: 0.01,
+            liquidity: 2_000
+          },
+          market: {
+            timeframe: "5m"
+          }
+        }
+      }
+    ] as never);
+
+    const result = await service.findSimilarHistoricalPerformance({
+      ...baseFeatures,
+      entryPrice: 0.67,
+      secondsToClose: 175,
+      distanceToTarget: -0.67,
+      spread: 0.01,
+      liquidity: 2_166
+    });
+
+    expect(result.totalSimilarCases).toBe(1);
+  });
+
+  it("does not adjust with fewer than 5 similar cases", async () => {
+    vi.mocked(prisma.simulatedTrade.findMany).mockResolvedValue(
+      Array.from({ length: 3 }, () => makeTrade(true, 1, 0.1)) as never
     );
 
     const result = await service.findSimilarHistoricalPerformance(baseFeatures);
-    expect(result.totalSimilarCases).toBe(10);
+    expect(result.totalSimilarCases).toBe(3);
     expect(result.confidenceAdjustment).toBe(0);
     expect(result.historicalSummary).toContain("no hay suficientes casos");
   });

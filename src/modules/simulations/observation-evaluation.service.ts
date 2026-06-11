@@ -20,10 +20,7 @@ export class ObservationEvaluationService {
 
     return prisma.observationEvaluation.upsert({
       where: {
-        marketId_observationType: {
-          marketId,
-          observationType
-        }
+        predictionId
       },
       update: {},
       create: {

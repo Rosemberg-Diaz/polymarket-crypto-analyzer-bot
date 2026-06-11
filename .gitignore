@@ -7,6 +7,8 @@ apps/web/dist/
 src/**/*.js
 scripts/*.js
 temp_query.sql
+query_tables.sql
+backup-src-js/
 
 prisma/dev.db
 prisma/dev.db-journal

@@ -57,6 +57,10 @@ export class RiskService {
     return this.evaluate(input);
   }
 
+  evaluateStaticSimulationRequest(input: RiskEvaluationInput): RiskAssessment {
+    return this.evaluateStaticRules(input);
+  }
+
   approveSimulation(signal: StrategySignal): boolean {
     const assessment = this.evaluateLegacySignal(signal);
     return assessment.allowed;

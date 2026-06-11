@@ -20,12 +20,6 @@ module.exports = {
       time: true,
       env: {
         NODE_ENV: "production",
-        APP_MODE: "LIVE_TRADING",
-        ENABLE_REAL_TRADING: "true",
-        REAL_STAKE_USD: "5",
-        MARKET_CATEGORY: "CRYPTO",
-        PRIORITY_ASSETS: "BTC,ETH,SOL,XRP,DOGE,BNB",
-        PRIORITIZE_SHORT_TERM_UP_DOWN: "true"
       },
       error_file: "logs/pm2-error.log",
       out_file: "logs/pm2-out.log",
