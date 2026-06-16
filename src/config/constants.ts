@@ -37,6 +37,14 @@ export const DEFAULTS = {
   mlOutcomeExecutionMaxSlippage: 0.01,
   enableMlOutcomeRealTrading: false,
   mlOutcomeRealAssets: ["BTC", "ETH", "SOL"],
+  mlOutcomeRealSegments: [
+    "BTC:5m:UP",
+    "SOL:5m:UP",
+    "SOL:15m:UP",
+    "BTC:15m:DOWN",
+    "XRP:15m:DOWN",
+    "XRP:5m:DOWN"
+  ],
   mlOutcomeRealStakeUsd: 3,
   mlOutcomeRealMaxOpenTrades: 2,
   mlOutcomeRealDailyStopLossUsd: 9,

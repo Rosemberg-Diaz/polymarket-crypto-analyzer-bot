@@ -48,27 +48,56 @@ function execution(
 }
 
 describe("live outcome checkpoint pilot gate", () => {
-  it("allows executable BTC 5m 30s shadow entries", () => {
+  it("allows executable BTC 5m UP 30s shadow entries", () => {
     expect(isLiveOutcomeCheckpointEligible(execution())).toEqual({ allowed: true });
   });
 
-  it("blocks non-30s checkpoints", () => {
+  it("blocks non-30s checkpoints for 5m markets", () => {
     const result = isLiveOutcomeCheckpointEligible(
       execution({ checkpointSeconds: 60 })
     );
     expect(result.allowed).toBe(false);
   });
 
-  it("blocks 15m markets", () => {
+  it("allows whitelisted SOL 15m UP markets at 180s, 120s and 60s", () => {
+    for (const checkpointSeconds of [180, 120, 60]) {
+      const result = isLiveOutcomeCheckpointEligible(
+        execution({
+          assetSymbol: "SOL",
+          timeframe: "15m",
+          predictedOutcome: "UP",
+          checkpointSeconds
+        })
+      );
+      expect(result).toEqual({ allowed: true });
+    }
+  });
+
+  it("blocks whitelisted 15m markets at 30s", () => {
     const result = isLiveOutcomeCheckpointEligible(
-      execution({ timeframe: "15m" })
+      execution({
+        assetSymbol: "SOL",
+        timeframe: "15m",
+        predictedOutcome: "UP",
+        checkpointSeconds: 30
+      })
+    );
+    expect(result).toEqual({
+      allowed: false,
+      reason: "CHECKPOINT_NOT_ALLOWED_FOR_TIMEFRAME:15m:30"
+    });
+  });
+
+  it("blocks non-whitelisted BTC 5m DOWN markets", () => {
+    const result = isLiveOutcomeCheckpointEligible(
+      execution({ assetSymbol: "BTC", timeframe: "5m", predictedOutcome: "DOWN" })
     );
     expect(result.allowed).toBe(false);
   });
 
-  it("blocks assets outside the pilot", () => {
+  it("blocks assets outside the segment pilot", () => {
     const result = isLiveOutcomeCheckpointEligible(
-      execution({ assetSymbol: "XRP" })
+      execution({ assetSymbol: "DOGE", timeframe: "5m", predictedOutcome: "UP" })
     );
     expect(result.allowed).toBe(false);
   });

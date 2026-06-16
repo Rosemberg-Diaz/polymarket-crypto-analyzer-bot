@@ -6,6 +6,8 @@ dotenv.config();
 
 export type AppMode = "SIMULATION_ONLY" | "LIVE_TRADING";
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type MlOutcomeRealSegment = `${CryptoAsset}:5m:${"UP" | "DOWN"}` |
+  `${CryptoAsset}:15m:${"UP" | "DOWN"}`;
 
 export interface AppConfig {
   databaseUrl: string;
@@ -42,6 +44,7 @@ export interface AppConfig {
   mlOutcomeExecutionMaxSlippage: number;
   enableMlOutcomeRealTrading: boolean;
   mlOutcomeRealAssets: CryptoAsset[];
+  mlOutcomeRealSegments: MlOutcomeRealSegment[];
   mlOutcomeRealStakeUsd: number;
   mlOutcomeRealMaxOpenTrades: number;
   mlOutcomeRealDailyStopLossUsd: number;
@@ -100,6 +103,38 @@ function parsePriorityAssets(value: string | undefined): CryptoAsset[] {
     );
 
   return assets.length > 0 ? assets : DEFAULT_PRIORITY_ASSETS;
+}
+
+function parseMlOutcomeRealSegments(
+  value: string | undefined
+): MlOutcomeRealSegment[] {
+  const rawSegments = value?.trim()
+    ? value
+    : DEFAULTS.mlOutcomeRealSegments.join(",");
+
+  const segments = rawSegments
+    .split(",")
+    .map((segment) => segment.trim().toUpperCase())
+    .flatMap((segment): MlOutcomeRealSegment[] => {
+      const [asset, timeframe, outcome] = segment.split(":");
+      const isAsset = SUPPORTED_CRYPTO_ASSETS.includes(asset as CryptoAsset);
+      const isTimeframe = timeframe === "5M" || timeframe === "15M";
+      const normalizedTimeframe = timeframe?.toLowerCase();
+      const isOutcome = outcome === "UP" || outcome === "DOWN";
+
+      if (!isAsset || !isTimeframe || !isOutcome) {
+        return [];
+      }
+
+      return [
+        `${asset as CryptoAsset}:${normalizedTimeframe as "5m" | "15m"}:${outcome}` as
+          MlOutcomeRealSegment
+      ];
+    });
+
+  return segments.length > 0
+    ? Array.from(new Set(segments))
+    : [...DEFAULTS.mlOutcomeRealSegments];
 }
 
 function validateAppMode(appMode: string, enableRealTrading: boolean): void {
@@ -309,6 +344,9 @@ export const config: AppConfig = {
   mlOutcomeRealAssets: parsePriorityAssets(
     process.env.ML_OUTCOME_REAL_ASSETS ??
       DEFAULTS.mlOutcomeRealAssets.join(",")
+  ),
+  mlOutcomeRealSegments: parseMlOutcomeRealSegments(
+    process.env.ML_OUTCOME_REAL_SEGMENTS
   ),
   mlOutcomeRealStakeUsd: Math.min(
     3,

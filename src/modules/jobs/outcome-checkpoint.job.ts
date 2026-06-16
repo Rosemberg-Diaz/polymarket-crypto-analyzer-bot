@@ -43,9 +43,10 @@ export class OutcomeCheckpointJob {
         if (ready) {
           logger.info("Live outcome checkpoint pilot trading service is ready.", {
             assets: config.mlOutcomeRealAssets,
+            segments: config.mlOutcomeRealSegments,
             stakeUsd: config.mlOutcomeRealStakeUsd,
             checkpointSeconds: 30,
-            timeframe: "5m",
+            timeframes: ["5m", "15m"],
             maxOpenTrades: config.mlOutcomeRealMaxOpenTrades,
             dailyStopLossUsd: config.mlOutcomeRealDailyStopLossUsd
           });

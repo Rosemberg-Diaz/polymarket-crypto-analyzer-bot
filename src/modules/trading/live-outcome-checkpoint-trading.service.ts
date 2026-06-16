@@ -5,8 +5,10 @@ import { prisma } from "../../database/client";
 import { LoggerService } from "../logger/logger.service";
 import { PolymarketTradingService } from "./polymarket-trading.service";
 
-const PILOT_CHECKPOINT_SECONDS = 30;
-const PILOT_TIMEFRAME = "5m";
+const CHECKPOINTS_BY_TIMEFRAME = {
+  "5m": [30],
+  "15m": [180, 120, 60]
+} as const;
 const OPEN_STATUSES = ["ENTRY_ATTEMPTING", "OPEN"];
 const PRICE_EPSILON = 0.000001;
 
@@ -177,16 +179,22 @@ export function isLiveOutcomeCheckpointEligible(
     return { allowed: false, reason: `SHADOW_NOT_EXECUTABLE:${execution.status}` };
   }
 
-  if (execution.checkpointSeconds !== PILOT_CHECKPOINT_SECONDS) {
-    return { allowed: false, reason: "NOT_30S_CHECKPOINT" };
+  if (!isAllowedRealSegment(execution)) {
+    return {
+      allowed: false,
+      reason:
+        `SEGMENT_NOT_IN_REAL_PILOT:${execution.assetSymbol}:` +
+        `${execution.timeframe}:${execution.predictedOutcome}`
+    };
   }
 
-  if (execution.timeframe !== PILOT_TIMEFRAME) {
-    return { allowed: false, reason: "NOT_5M_TIMEFRAME" };
-  }
-
-  if (!config.mlOutcomeRealAssets.includes(execution.assetSymbol as CryptoAsset)) {
-    return { allowed: false, reason: `ASSET_NOT_IN_PILOT:${execution.assetSymbol}` };
+  if (!isAllowedCheckpointForTimeframe(execution)) {
+    return {
+      allowed: false,
+      reason:
+        `CHECKPOINT_NOT_ALLOWED_FOR_TIMEFRAME:` +
+        `${execution.timeframe}:${execution.checkpointSeconds}`
+    };
   }
 
   if (execution.fullyFilled !== true) {
@@ -217,6 +225,34 @@ export function isLiveOutcomeCheckpointEligible(
   }
 
   return { allowed: true };
+}
+
+function isAllowedRealSegment(execution: MlOutcomeShadowExecution): boolean {
+  const asset = execution.assetSymbol as CryptoAsset;
+  const timeframe = execution.timeframe === "15m" ? "15m" :
+    execution.timeframe === "5m" ? "5m" : null;
+  const outcome = execution.predictedOutcome === "UP" ? "UP" :
+    execution.predictedOutcome === "DOWN" ? "DOWN" : null;
+
+  if (!timeframe || !outcome) {
+    return false;
+  }
+
+  return config.mlOutcomeRealSegments.includes(`${asset}:${timeframe}:${outcome}`);
+}
+
+function isAllowedCheckpointForTimeframe(
+  execution: MlOutcomeShadowExecution
+): boolean {
+  const timeframe = execution.timeframe === "15m" ? "15m" :
+    execution.timeframe === "5m" ? "5m" : null;
+
+  if (!timeframe) {
+    return false;
+  }
+
+  return (CHECKPOINTS_BY_TIMEFRAME[timeframe] as readonly number[])
+    .includes(execution.checkpointSeconds);
 }
 
 async function getTodayPilotProfit(): Promise<number> {
