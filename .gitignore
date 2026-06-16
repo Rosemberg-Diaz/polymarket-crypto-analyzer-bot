@@ -12,6 +12,8 @@ backup-src-js/
 
 prisma/dev.db
 prisma/dev.db-journal
+prisma/dev.db-wal
+prisma/dev.db-shm
 
 logs/*
 !logs/.gitkeep

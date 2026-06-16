@@ -19,10 +19,20 @@ const ACTIVE_SERIES_PAGE_SIZE = 100;
 const ACTIVE_SERIES_MAX_PAGES = 2;
 const CLOB_SAMPLING_MARKET_MAX_PAGES = 6;
 const DISCOVERY_CACHE_TTL_MS = 60 * 1000;
+const DAILY_DISCOVERY_CACHE_TTL_MS = 60 * 1000;
 // AVAX remains supported by the domain model, but Polymarket does not currently
 // publish the recurring 5m market, so avoid probing nonexistent event slugs.
 const RECURRING_UP_DOWN_ASSETS = ["btc", "eth", "sol", "xrp", "doge", "bnb"] as const;
-const RECURRING_UP_DOWN_TIMEFRAME_SECONDS = 5 * 60;
+const RECURRING_UP_DOWN_5M_TIMEFRAME_SECONDS = 5 * 60;
+const RECURRING_UP_DOWN_15M_TIMEFRAME_SECONDS = 15 * 60;
+const DAILY_UP_DOWN_ASSETS = [
+  "bitcoin",
+  "ethereum",
+  "solana",
+  "xrp",
+  "dogecoin",
+  "bnb"
+] as const;
 const FAST_RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS = [0];
 const RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS = [
   -5 * 60,
@@ -56,6 +66,7 @@ interface DiscoveryCache {
 
 export class PolymarketService {
   private discoveryCache: DiscoveryCache | null = null;
+  private dailyDiscoveryCache: DiscoveryCache | null = null;
 
   constructor(
     private readonly client = new PolymarketClient(),
@@ -78,12 +89,80 @@ export class PolymarketService {
   }
 
   async getFastCryptoUpDown5mMarkets(): Promise<NormalizedCryptoMarket[]> {
-    const markets = await this.fetchRecurringCryptoUpDownMarkets(FAST_RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS);
+    const markets = await this.fetchRecurringCryptoUpDownMarkets(
+      "5m",
+      RECURRING_UP_DOWN_5M_TIMEFRAME_SECONDS,
+      FAST_RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS
+    );
     const cryptoMarkets = markets
       .map((market) => mapPolymarketMarketToCryptoMarket(market))
       .filter((market): market is NormalizedCryptoMarket => market !== null)
       .filter((market) => market.marketType === "UP_DOWN_SHORT_TERM" && market.timeframe === "5m");
     return sortPolymarketCryptoMarkets(cryptoMarkets);
+  }
+
+  async getFastCryptoUpDown15mMarkets(): Promise<NormalizedCryptoMarket[]> {
+    const markets = await this.fetchRecurringCryptoUpDownMarkets(
+      "15m",
+      RECURRING_UP_DOWN_15M_TIMEFRAME_SECONDS,
+      FAST_RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS
+    );
+    const cryptoMarkets = markets
+      .map((market) => mapPolymarketMarketToCryptoMarket(market))
+      .filter((market): market is NormalizedCryptoMarket => market !== null)
+      .filter(
+        (market) =>
+          market.marketType === "UP_DOWN_SHORT_TERM" &&
+          market.timeframe === "15m"
+      );
+    return sortPolymarketCryptoMarkets(cryptoMarkets);
+  }
+
+  async getFastCryptoUpDownDailyMarkets(): Promise<NormalizedCryptoMarket[]> {
+    const now = Date.now();
+    if (this.dailyDiscoveryCache && this.dailyDiscoveryCache.expiresAt > now) {
+      return this.dailyDiscoveryCache.markets
+        .map((market) => mapPolymarketMarketToCryptoMarket(market))
+        .filter((market): market is NormalizedCryptoMarket => market !== null)
+        .map((market) => ({
+          ...market,
+          marketType: "UP_DOWN_SHORT_TERM" as const,
+          timeframe: "1d" as const
+        }));
+    }
+
+    const dateSlugs = getNewYorkDateSlugs(new Date());
+    const slugs = DAILY_UP_DOWN_ASSETS.flatMap((asset) =>
+      dateSlugs.map((dateSlug) => `${asset}-up-or-down-on-${dateSlug}`)
+    );
+    const events = await Promise.all(
+      slugs.map((slug) => this.client.getEventBySlug(slug))
+    );
+    const markets = extractMarketsFromEvents(
+      events.filter((event): event is PolymarketEvent => event !== null)
+    ).filter((market) => {
+      const endDate = market.endDate ? new Date(market.endDate) : null;
+      return (
+        market.active !== false &&
+        market.closed !== true &&
+        endDate !== null &&
+        endDate.getTime() > Date.now()
+      );
+    });
+
+    this.dailyDiscoveryCache = {
+      expiresAt: Date.now() + DAILY_DISCOVERY_CACHE_TTL_MS,
+      markets
+    };
+
+    return markets
+      .map((market) => mapPolymarketMarketToCryptoMarket(market))
+      .filter((market): market is NormalizedCryptoMarket => market !== null)
+      .map((market) => ({
+        ...market,
+        marketType: "UP_DOWN_SHORT_TERM" as const,
+        timeframe: "1d" as const
+      }));
   }
 
   private async fetchCryptoMarketCandidates(params: GetActiveMarketsParams): Promise<PolymarketMarket[]> {
@@ -145,7 +224,14 @@ export class PolymarketService {
       TARGETED_DISCOVERY_QUERIES.map((query) => this.client.searchSeries(query))
     );
     const recurringUpDownMarkets = await this.fetchRecurringCryptoUpDownMarkets(
+      "5m",
+      RECURRING_UP_DOWN_5M_TIMEFRAME_SECONDS,
       RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS
+    );
+    const recurringUpDown15mMarkets = await this.fetchRecurringCryptoUpDownMarkets(
+      "15m",
+      RECURRING_UP_DOWN_15M_TIMEFRAME_SECONDS,
+      RECURRING_UP_DOWN_WINDOW_OFFSETS_SECONDS.map((offset) => offset * 3)
     );
     const samplingMarkets = await this.fetchClobSamplingMarkets();
     const generalMarkets = marketPages.flat();
@@ -162,6 +248,7 @@ export class PolymarketService {
     ];
     const allCandidates = [
       ...recurringUpDownMarkets,
+      ...recurringUpDown15mMarkets,
       ...generalMarkets,
       ...searchedMarkets,
       ...marketsFromEvents,
@@ -203,12 +290,18 @@ export class PolymarketService {
     return candidates;
   }
 
-  private async fetchRecurringCryptoUpDownMarkets(offsetsSeconds: number[]): Promise<PolymarketMarket[]> {
+  private async fetchRecurringCryptoUpDownMarkets(
+    timeframe: "5m" | "15m",
+    timeframeSeconds: number,
+    offsetsSeconds: number[]
+  ): Promise<PolymarketMarket[]> {
     const baseTimestamp =
-      Math.floor(Date.now() / 1000 / RECURRING_UP_DOWN_TIMEFRAME_SECONDS) *
-      RECURRING_UP_DOWN_TIMEFRAME_SECONDS;
+      Math.floor(Date.now() / 1000 / timeframeSeconds) *
+      timeframeSeconds;
     const slugs = RECURRING_UP_DOWN_ASSETS.flatMap((asset) =>
-      offsetsSeconds.map((offset) => `${asset}-updown-5m-${baseTimestamp + offset}`)
+      offsetsSeconds.map(
+        (offset) => `${asset}-updown-${timeframe}-${baseTimestamp + offset}`
+      )
     );
     const events = await Promise.all(slugs.map((slug) => this.client.getEventBySlug(slug)));
 
@@ -335,6 +428,23 @@ export class PolymarketService {
       });
     }
   }
+}
+
+function getNewYorkDateSlugs(now: Date): string[] {
+  return [0, 1].map((dayOffset) => {
+    const shifted = new Date(now.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "long",
+      day: "numeric"
+    }).formatToParts(shifted);
+    const month = parts.find((part) => part.type === "month")?.value.toLowerCase();
+    const day = parts.find((part) => part.type === "day")?.value;
+    const year = parts.find((part) => part.type === "year")?.value;
+
+    return `${month}-${day}-${year}`;
+  });
 }
 
 function extractMarketsFromEvents(events: PolymarketEvent[]): PolymarketMarket[] {

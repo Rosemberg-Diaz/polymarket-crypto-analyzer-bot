@@ -73,8 +73,14 @@ async function main(): Promise<void> {
         assetSymbol: true,
         outcome: true,
         status: true,
+        stake: true,
         profit: true,
-        marketId: true
+        marketId: true,
+        market: {
+          select: {
+            timeframe: true
+          }
+        }
       }
     }),
     prisma.shortTermExitQuote.count({
@@ -148,7 +154,39 @@ async function main(): Promise<void> {
         resolvedExitObservations.reduce((sum, row) => sum + Number(row.profit ?? 0), 0)
       ),
       resolvedWins: resolvedExitObservations.filter((row) => Number(row.profit ?? 0) > 0).length,
-      resolvedLosses: resolvedExitObservations.filter((row) => Number(row.profit ?? 0) <= 0).length
+      resolvedLosses: resolvedExitObservations.filter((row) => Number(row.profit ?? 0) <= 0).length,
+      byTimeframe: Object.fromEntries(
+        Array.from(
+          new Set(exitObservations.map((row) => row.market.timeframe ?? "unknown"))
+        ).map((timeframe) => {
+          const rows = exitObservations.filter(
+            (row) => (row.market.timeframe ?? "unknown") === timeframe
+          );
+          const closed = rows.filter((row) => row.status === "CLOSED");
+          const noExit = rows.filter((row) => row.status === "NO_EXIT");
+          const closedProfit = closed.reduce(
+            (sum, row) => sum + Number(row.profit ?? 0),
+            0
+          );
+          const conservativeProfit =
+            closedProfit -
+            noExit.reduce((sum, row) => sum + Number(row.stake), 0);
+
+          return [
+            timeframe,
+            {
+              observations: rows.length,
+              open: rows.filter((row) => row.status === "OPEN").length,
+              closed: closed.length,
+              noExit: noExit.length,
+              wins: closed.filter((row) => Number(row.profit ?? 0) > 0).length,
+              losses: closed.filter((row) => Number(row.profit ?? 0) <= 0).length,
+              closedProfit: round6(closedProfit),
+              conservativeProfit: round6(conservativeProfit)
+            }
+          ];
+        })
+      )
     },
     storage: {
       snapshotRawDataBytes: sumTextBytes(snapshots.map((row) => row.rawData)),

@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { BACKUP_RETENTION_DAYS, DIRECTORIES } from "../../config/constants";
+import { DIRECTORIES } from "../../config/constants";
 import { config } from "../../config/env";
+import { prisma } from "../../database/client";
 import { LoggerService } from "../logger/logger.service";
 
 export class BackupService {
@@ -12,7 +13,7 @@ export class BackupService {
       return "disabled";
     }
 
-    return `enabled every ${config.backupIntervalHours} hours`;
+    return "enabled with one rotating safety backup";
   }
 
   async createBackup(): Promise<string | null> {
@@ -26,9 +27,11 @@ export class BackupService {
     }
 
     try {
+      await prisma.$queryRawUnsafe("PRAGMA wal_checkpoint(TRUNCATE)");
       await fs.mkdir(DIRECTORIES.backups, { recursive: true });
       const backupPath = path.join(DIRECTORIES.backups, `dev-${this.formatTimestamp(new Date())}.db`);
       await fs.copyFile(sourcePath, backupPath);
+      await this.keepOnlyBackup(backupPath);
       this.logger.info("Database backup created.", { sourcePath, backupPath });
       return backupPath;
     } catch (error) {
@@ -37,13 +40,35 @@ export class BackupService {
     }
   }
 
-  async cleanOldBackups(retentionDays = BACKUP_RETENTION_DAYS): Promise<number> {
-    const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-    let deleted = 0;
+  async ensureRecentBackup(): Promise<boolean> {
+    if (await this.hasAnyBackup()) {
+      this.logger.info("Existing safety backup found; automatic backup creation skipped.");
+      return true;
+    }
 
+    return (await this.createBackup()) !== null;
+  }
+
+  async hasAnyBackup(): Promise<boolean> {
     try {
       await fs.mkdir(DIRECTORIES.backups, { recursive: true });
       const entries = await fs.readdir(DIRECTORIES.backups, { withFileTypes: true });
+      return entries.some((entry) => entry.isFile() && entry.name.endsWith(".db"));
+    } catch (error) {
+      this.logger.error("Could not inspect database backups.", error);
+    }
+
+    return false;
+  }
+
+  async cleanOldBackups(): Promise<number> {
+    try {
+      await fs.mkdir(DIRECTORIES.backups, { recursive: true });
+      const entries = await fs.readdir(DIRECTORIES.backups, { withFileTypes: true });
+      const backups: Array<{
+        filePath: string;
+        mtimeMs: number;
+      }> = [];
 
       for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith(".db")) {
@@ -52,19 +77,27 @@ export class BackupService {
 
         const filePath = path.join(DIRECTORIES.backups, entry.name);
         const stat = await fs.stat(filePath);
-
-        if (stat.mtimeMs < cutoffMs) {
-          await fs.unlink(filePath);
-          deleted += 1;
-        }
+        backups.push({ filePath, mtimeMs: stat.mtimeMs });
       }
 
-      this.logger.info("Old backup cleanup completed.", { retentionDays, deleted });
+      backups.sort((left, right) => right.mtimeMs - left.mtimeMs);
+      const latest = backups[0];
+      if (!latest) {
+        return 0;
+      }
+
+      const deleted = await this.keepOnlyBackup(latest.filePath);
+      this.logger.info("Backup rotation completed.", {
+        policy: "KEEP_LATEST_ONLY",
+        retainedBackup: latest.filePath,
+        deleted
+      });
+      return deleted;
     } catch (error) {
       this.logger.error("Old backup cleanup failed.", error);
     }
 
-    return deleted;
+    return 0;
   }
 
   private resolveDatabasePath(): string {
@@ -90,5 +123,34 @@ export class BackupService {
     ];
 
     return parts.join("");
+  }
+
+  private async keepOnlyBackup(backupToKeep: string): Promise<number> {
+    const intendedDirectory = path.resolve(DIRECTORIES.backups);
+    const resolvedBackupToKeep = path.resolve(backupToKeep);
+    if (path.dirname(resolvedBackupToKeep) !== intendedDirectory) {
+      throw new Error("Refusing to rotate backups outside the backups directory.");
+    }
+
+    const entries = await fs.readdir(intendedDirectory, { withFileTypes: true });
+    let deleted = 0;
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".db")) {
+        continue;
+      }
+
+      const candidate = path.resolve(intendedDirectory, entry.name);
+      if (
+        path.dirname(candidate) !== intendedDirectory ||
+        candidate === resolvedBackupToKeep
+      ) {
+        continue;
+      }
+
+      await fs.unlink(candidate);
+      deleted += 1;
+    }
+
+    return deleted;
   }
 }

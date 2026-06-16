@@ -216,6 +216,13 @@ export class PolymarketClient {
       tokenId,
       bids: normalizeOrderBookLevels(raw.bids),
       asks: normalizeOrderBookLevels(raw.asks),
+      minOrderSize: extractNumber(raw, "min_order_size"),
+      tickSize: extractNumber(raw, "tick_size"),
+      timestamp:
+        typeof raw.timestamp === "string" || typeof raw.timestamp === "number"
+          ? String(raw.timestamp)
+          : null,
+      hash: typeof raw.hash === "string" ? raw.hash : null,
       raw
     };
   }

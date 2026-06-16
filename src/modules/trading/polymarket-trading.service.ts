@@ -29,6 +29,14 @@ export interface PlacedOrderResult {
   error?: string;
 }
 
+export interface MarketOrderExecutionResult extends PlacedOrderResult {
+  status?: string;
+  filledShares?: number;
+  cashAmount?: number;
+  averagePrice?: number;
+  raw?: unknown;
+}
+
 export class PolymarketTradingService {
   private clobClient: ClobClient | null = null;
   private initialized = false;
@@ -284,10 +292,220 @@ export class PolymarketTradingService {
     }
   }
 
+  async placeMarketBuy(
+    tokenId: string,
+    budgetUsd: number,
+    maximumPrice: number
+  ): Promise<MarketOrderExecutionResult> {
+    if (!this.clobClient) {
+      return { success: false, error: "Trading service not initialized." };
+    }
+
+    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0 || budgetUsd > 3) {
+      return { success: false, error: `Invalid live short-exit budget: ${budgetUsd}` };
+    }
+
+    if (!isValidPrice(maximumPrice)) {
+      return { success: false, error: `Invalid maximum buy price: ${maximumPrice}` };
+    }
+
+    const balanceInfo = await this.getUsdcBalance(true);
+    if (!balanceInfo || balanceInfo.balanceUsd < budgetUsd) {
+      return {
+        success: false,
+        error: `Insufficient USDC balance for $${budgetUsd.toFixed(2)} market buy.`
+      };
+    }
+
+    try {
+      const response = await this.clobClient.createAndPostMarketOrder(
+        {
+          tokenID: tokenId,
+          amount: budgetUsd,
+          price: maximumPrice,
+          side: Side.BUY,
+          orderType: OrderType.FAK,
+          userUSDCBalance: budgetUsd
+        },
+        {},
+        OrderType.FAK
+      );
+      return await this.normalizeMarketOrderResponse(response, "BUY");
+    } catch (error) {
+      return failedExecution(error);
+    }
+  }
+
+  async placeFokMarketBuy(
+    tokenId: string,
+    budgetUsd: number,
+    maximumPrice: number
+  ): Promise<MarketOrderExecutionResult> {
+    if (!this.clobClient) {
+      return { success: false, error: "Trading service not initialized." };
+    }
+
+    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0 || budgetUsd > 3) {
+      return { success: false, error: `Invalid live outcome budget: ${budgetUsd}` };
+    }
+
+    if (!isValidPrice(maximumPrice)) {
+      return { success: false, error: `Invalid maximum FOK buy price: ${maximumPrice}` };
+    }
+
+    const balanceInfo = await this.getUsdcBalance(true);
+    if (!balanceInfo || balanceInfo.balanceUsd < budgetUsd) {
+      return {
+        success: false,
+        error: `Insufficient USDC balance for $${budgetUsd.toFixed(2)} FOK buy.`
+      };
+    }
+
+    try {
+      const response = await this.clobClient.createAndPostMarketOrder(
+        {
+          tokenID: tokenId,
+          amount: budgetUsd,
+          price: maximumPrice,
+          side: Side.BUY,
+          orderType: OrderType.FOK,
+          userUSDCBalance: budgetUsd
+        },
+        {},
+        OrderType.FOK
+      );
+      return await this.normalizeMarketOrderResponse(response, "BUY");
+    } catch (error) {
+      return failedExecution(error);
+    }
+  }
+
+  async placeMarketSell(
+    tokenId: string,
+    shares: number,
+    minimumPrice: number
+  ): Promise<MarketOrderExecutionResult> {
+    if (!this.clobClient) {
+      return { success: false, error: "Trading service not initialized." };
+    }
+
+    if (!Number.isFinite(shares) || shares <= 0) {
+      return { success: false, error: `Invalid shares to sell: ${shares}` };
+    }
+
+    if (!isValidPrice(minimumPrice)) {
+      return { success: false, error: `Invalid minimum sell price: ${minimumPrice}` };
+    }
+
+    try {
+      await this.clobClient.updateBalanceAllowance({
+        asset_type: AssetType.CONDITIONAL,
+        token_id: tokenId
+      });
+
+      const response = await this.clobClient.createAndPostMarketOrder(
+        {
+          tokenID: tokenId,
+          amount: shares,
+          price: minimumPrice,
+          side: Side.SELL,
+          orderType: OrderType.FAK
+        },
+        {},
+        OrderType.FAK
+      );
+
+      return await this.normalizeMarketOrderResponse(response, "SELL");
+    } catch (error) {
+      return failedExecution(error);
+    }
+  }
+
+  private async normalizeMarketOrderResponse(
+    response: Record<string, unknown> | null | undefined,
+    side: "BUY" | "SELL"
+  ): Promise<MarketOrderExecutionResult> {
+    const orderId = readString(response, ["id", "orderId", "orderID"]);
+    const status = readString(response, ["status"]);
+    let makingAmount = readFiniteNumber(response?.makingAmount);
+    let takingAmount = readFiniteNumber(response?.takingAmount);
+
+    if (orderId && (makingAmount === null || takingAmount === null)) {
+      try {
+        const order = await this.clobClient!.getOrder(orderId);
+        const matchedShares = readFiniteNumber(order.size_matched);
+        const price = readFiniteNumber(order.price);
+        if (matchedShares !== null && price !== null) {
+          if (side === "BUY") {
+            makingAmount = matchedShares * price;
+            takingAmount = matchedShares;
+          } else {
+            makingAmount = matchedShares;
+            takingAmount = matchedShares * price;
+          }
+        }
+      } catch {
+        // FAK orders may disappear from the open-order endpoint immediately.
+      }
+    }
+
+    const filledShares = side === "BUY" ? takingAmount : makingAmount;
+    const cashAmount = side === "BUY" ? makingAmount : takingAmount;
+    const successFlag = response?.success;
+    const error = readString(response, ["error", "errorMsg"]);
+    const success =
+      successFlag !== false &&
+      filledShares !== null &&
+      cashAmount !== null &&
+      filledShares > 0 &&
+      cashAmount > 0;
+
+    return {
+      success,
+      orderId: orderId ?? undefined,
+      status: status ?? undefined,
+      filledShares: filledShares ?? undefined,
+      cashAmount: cashAmount ?? undefined,
+      averagePrice:
+        filledShares && cashAmount ? cashAmount / filledShares : undefined,
+      error: success ? undefined : error ?? "Market order returned no confirmed fill.",
+      raw: response
+    };
+  }
+
   private getTokenId(market: NormalizedCryptoMarket, outcome: "UP" | "DOWN"): string | null {
     const outcomeData = market.outcomes?.find((o) => o.normalizedName === outcome);
     return outcomeData?.externalTokenId ?? null;
   }
+}
+
+function isValidPrice(value: number): boolean {
+  return Number.isFinite(value) && value > 0 && value < 1;
+}
+
+function readString(
+  value: Record<string, unknown> | null | undefined,
+  keys: string[]
+): string | null {
+  for (const key of keys) {
+    const candidate = value?.[key];
+    if (typeof candidate === "string" && candidate.trim() !== "") {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function readFiniteNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function failedExecution(error: unknown): MarketOrderExecutionResult {
+  return {
+    success: false,
+    error: error instanceof Error ? error.message : String(error)
+  };
 }
 
 function validateRealOrderGate(params: {

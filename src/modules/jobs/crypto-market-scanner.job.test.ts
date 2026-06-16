@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { SignalResult } from "../signals/signal.types";
+import { SignalInput, SignalResult } from "../signals/signal.types";
 import {
+  EDGE_ONLY_CRYPTO_OBSERVATION_TYPE,
+  getDueOutcomePredictionCheckpoints,
+  getEdgeOnlyCryptoObservationType,
   getHistoricalGateObservationType,
   hasPersistablePredictionRule
 } from "./crypto-market-scanner.job";
@@ -75,6 +78,36 @@ describe("CryptoMarketScannerJob prediction persistence", () => {
     expect(hasPersistablePredictionRule(signal)).toBe(false);
     expect(getHistoricalGateObservationType(signal)).toBeNull();
   });
+
+  it("captures fixed outcome checkpoints without backfilling stale windows", () => {
+    expect(getDueOutcomePredictionCheckpoints(180)).toEqual([180]);
+    expect(getDueOutcomePredictionCheckpoints(103)).toEqual([120]);
+    expect(getDueOutcomePredictionCheckpoints(58)).toEqual([60]);
+    expect(getDueOutcomePredictionCheckpoints(20)).toEqual([30]);
+    expect(getDueOutcomePredictionCheckpoints(10)).toEqual([30]);
+    expect(getDueOutcomePredictionCheckpoints(220)).toEqual([]);
+  });
+
+  it("observes all fast crypto assets using only edge", () => {
+    const signal = makeSignal("NONE", "WAIT");
+    signal.edge = 0.03;
+
+    for (const asset of ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]) {
+      expect(getEdgeOnlyCryptoObservationType(makeInput(asset, 250), signal)).toBe(
+        EDGE_ONLY_CRYPTO_OBSERVATION_TYPE
+      );
+    }
+  });
+
+  it("does not broaden the edge-only observation outside its exact scope", () => {
+    const signal = makeSignal("NONE", "WAIT");
+    signal.edge = 0.03;
+
+    expect(getEdgeOnlyCryptoObservationType(makeInput("OTHER", 99), signal)).toBeNull();
+
+    signal.edge = 0.029999;
+    expect(getEdgeOnlyCryptoObservationType(makeInput("XRP", 99), signal)).toBeNull();
+  });
 });
 
 function makeSignal(entryRule: string, recommendation: SignalResult["recommendation"]): SignalResult {
@@ -91,5 +124,33 @@ function makeSignal(entryRule: string, recommendation: SignalResult["recommendat
     features: { entryRule },
     confidenceAdjustment: 0,
     historicalSummary: "test"
+  };
+}
+
+function makeInput(assetSymbol: string, secondsToClose: number): SignalInput {
+  return {
+    marketId: "market-1",
+    marketSlug: "sol-updown-5m-test",
+    marketQuestion: "SOL Up or Down?",
+    marketType: "UP_DOWN_SHORT_TERM",
+    assetSymbol,
+    timeframe: "5m",
+    targetPrice: 100,
+    targetPriceSource: "POLYMARKET_RTDS_CHAINLINK",
+    targetPriceTrustedForLearning: true,
+    currentAssetPrice: 101,
+    upPrice: 0.6,
+    downPrice: 0.4,
+    yesPrice: null,
+    noPrice: null,
+    spread: 0.01,
+    liquidity: 1000,
+    volume: 1000,
+    secondsToClose,
+    momentumLast30s: null,
+    momentumLast60s: null,
+    momentumLast120s: null,
+    volatilityLast60s: null,
+    volatilityLast120s: null
   };
 }

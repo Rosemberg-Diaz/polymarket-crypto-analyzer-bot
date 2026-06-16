@@ -33,10 +33,18 @@ model Market {
   realOrders       RealOrder[]
   observationEvaluations ObservationEvaluation[]
   shortTermExitObservations ShortTermExitObservation[]
+  shortTermEntryQuotes ShortTermEntryQuote[]
+  realisticShortExitExecutions RealisticShortExitExecution[]
+  liveShortExitTrades LiveShortExitTrade[]
+  dailyExitCycles DailyExitCycle[]
+  dailyMarketQuotes DailyMarketQuote[]
+  mlOutcomeShadowExecutions MlOutcomeShadowExecution[]
+  liveOutcomeCheckpointTrades LiveOutcomeCheckpointTrade[]
 
   @@index([assetSymbol])
   @@index([marketType])
   @@index([createdAt])
+  @@index([category, marketType, timeframe, active, closed, endDate])
 }
 
 model MarketOutcome {
@@ -85,6 +93,7 @@ model MarketSnapshot {
 
   @@index([marketId])
   @@index([createdAt])
+  @@index([marketId, createdAt])
 }
 
 model BotPrediction {
@@ -106,17 +115,28 @@ model BotPrediction {
   reason             String?
   features           String?
   historicalSummary  String?
+  mlOutcomePrediction String?
+  mlProbabilityUp     Decimal?
+  mlProbabilityDown   Decimal?
+  mlOutcomeEntryPrice Decimal?
+  mlOutcomeModelVersion String?
+  mlOutcomeFeatures   String?
+  mlOutcomeScoredAt   DateTime?
   createdAt          DateTime         @default(now())
   simulatedTrades    SimulatedTrade[]
   realOrders          RealOrder[]
   observationEvaluation ObservationEvaluation?
+  mlOutcomeShadowExecution MlOutcomeShadowExecution?
+  liveOutcomeCheckpointTrade LiveOutcomeCheckpointTrade?
 
   @@index([marketId])
   @@index([snapshotId])
   @@index([assetSymbol])
   @@index([marketType])
   @@index([strategyName])
+  @@index([mlOutcomePrediction])
   @@index([createdAt])
+  @@index([marketId, strategyName, createdAt])
 }
 
 model SimulatedTrade {
@@ -208,12 +228,110 @@ model ObservationEvaluation {
   @@index([resolvedAt])
 }
 
+model MlOutcomeShadowExecution {
+  id                   String        @id @default(cuid())
+  predictionId         String        @unique
+  prediction           BotPrediction @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+  marketId             String
+  market               Market        @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  assetSymbol          String
+  timeframe            String
+  predictedOutcome     String
+  tokenId              String
+  checkpointSeconds    Int
+  actualSecondsToClose Int
+  requestedBudget      Decimal
+  status               String
+  skipReason           String?
+  minOrderSize         Decimal?
+  tickSize             Decimal?
+  bestAsk              Decimal?
+  worstFillPrice       Decimal?
+  averageEntryPrice    Decimal?
+  shares               Decimal?
+  grossCost            Decimal?
+  fee                  Decimal?
+  totalCost            Decimal?
+  slippage             Decimal?
+  modelProbability     Decimal?
+  expectedProfit       Decimal?
+  expectedRoi          Decimal?
+  fullyFilled          Boolean       @default(false)
+  latencyMs            Int
+  bookTimestamp        String?
+  bookFingerprint      String?
+  officialWinner       String?
+  resolutionSource     String?
+  isWin                Boolean?
+  finalValue           Decimal?
+  profit               Decimal?
+  roi                  Decimal?
+  resolvedAt           DateTime?
+  liveOutcomeCheckpointTrade LiveOutcomeCheckpointTrade?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@unique([marketId, checkpointSeconds])
+  @@index([assetSymbol])
+  @@index([timeframe])
+  @@index([predictedOutcome])
+  @@index([status])
+  @@index([createdAt])
+  @@index([resolvedAt])
+}
+
+model LiveOutcomeCheckpointTrade {
+  id                   String                   @id @default(cuid())
+  shadowExecutionId    String                   @unique
+  shadowExecution      MlOutcomeShadowExecution @relation(fields: [shadowExecutionId], references: [id], onDelete: Cascade)
+  predictionId         String                   @unique
+  prediction           BotPrediction            @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+  marketId             String
+  market               Market                   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  assetSymbol          String
+  timeframe            String
+  predictedOutcome     String
+  tokenId              String
+  checkpointSeconds    Int
+  status               String                   @default("ENTRY_ATTEMPTING")
+  budget               Decimal
+  requestedMaxPrice    Decimal
+  externalOrderId      String?
+  filledShares         Decimal                  @default(0)
+  cashAmount           Decimal                  @default(0)
+  averagePrice         Decimal?
+  responseData         String?
+  errorMessage         String?
+  officialWinner       String?
+  resolutionSource     String?
+  isWin                Boolean?
+  finalValue           Decimal?
+  profit               Decimal?
+  roi                  Decimal?
+  openedAt             DateTime?
+  resolvedAt           DateTime?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  @@index([marketId])
+  @@index([assetSymbol])
+  @@index([timeframe])
+  @@index([predictedOutcome])
+  @@index([checkpointSeconds])
+  @@index([status])
+  @@index([createdAt])
+  @@index([resolvedAt])
+}
+
 model ShortTermExitObservation {
   id                    String   @id @default(cuid())
   marketId              String
   market                Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
   assetSymbol           String
   outcome               String
+  strategyVersion       String   @default("CHEAP_REBOUND_V1")
+  entryBand             String   @default("DEFAULT")
+  entryTrigger          String?
   status                String   @default("OPEN")
   stake                 Decimal
   entryAsk              Decimal
@@ -227,6 +345,7 @@ model ShortTermExitObservation {
   maxNetRoi             Decimal  @default(0)
   minNetRoi             Decimal  @default(0)
   firstTakeProfit2At    DateTime?
+  firstTakeProfit3At    DateTime?
   firstTakeProfit5At    DateTime?
   firstTakeProfit10At   DateTime?
   firstStopLoss3At      DateTime?
@@ -239,16 +358,274 @@ model ShortTermExitObservation {
   roi                   Decimal?
   exitReason            String?
   exitedAt              DateTime?
+  mlRiskLabel           String?
+  mlRiskProbability     Decimal?
+  mlModelVersion        String?
+  mlFeatures            String?
+  mlScoredAt            DateTime?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
   quotes                ShortTermExitQuote[]
+  exitScenarios         ShortTermExitScenario[]
+  realisticExecution    RealisticShortExitExecution?
+  liveTrade             LiveShortExitTrade?
 
-  @@unique([marketId, outcome])
+  @@unique([marketId, outcome, strategyVersion, entryBand])
+  @@index([assetSymbol])
+  @@index([outcome])
+  @@index([entryBand])
+  @@index([strategyVersion])
+  @@index([status])
+  @@index([createdAt])
+  @@index([exitedAt])
+  @@index([marketId, strategyVersion])
+}
+
+model RealisticShortExitExecution {
+  id                  String                   @id @default(cuid())
+  observationId       String                   @unique
+  observation         ShortTermExitObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  marketId            String
+  market              Market                   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  assetSymbol         String
+  outcome             String
+  tokenId             String
+  status              String                   @default("ACTIVE")
+  budget              Decimal
+  entryCost           Decimal
+  sharesBought        Decimal
+  averageEntryPrice   Decimal
+  buyFees             Decimal
+  sharesSold          Decimal                  @default(0)
+  sellGrossProceeds   Decimal                  @default(0)
+  sellFees            Decimal                  @default(0)
+  remainingShares     Decimal
+  settlementValue     Decimal                  @default(0)
+  finalValue          Decimal?
+  profit              Decimal?
+  roi                 Decimal?
+  exitTrigger         String?
+  dataGapCount        Int                      @default(0)
+  resolutionSource    String?
+  officialWinner      String?
+  lastObservedAt      DateTime?
+  resolvedAt          DateTime?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  fills               RealisticShortExitFill[]
+  bookUses            RealisticShortExitBookUse[]
+
+  @@index([marketId])
   @@index([assetSymbol])
   @@index([outcome])
   @@index([status])
   @@index([createdAt])
-  @@index([exitedAt])
+  @@index([resolvedAt])
+}
+
+model RealisticShortExitFill {
+  id              String                      @id @default(cuid())
+  executionId     String
+  execution       RealisticShortExitExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  side            String
+  price           Decimal
+  shares          Decimal
+  grossValue      Decimal
+  fee             Decimal
+  netValue        Decimal
+  secondsToClose  Int
+  createdAt       DateTime                    @default(now())
+
+  @@index([executionId])
+  @@index([side])
+  @@index([createdAt])
+}
+
+model LiveShortExitTrade {
+  id                String                   @id @default(cuid())
+  observationId     String                   @unique
+  observation       ShortTermExitObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  marketId          String
+  market            Market                   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  assetSymbol       String
+  outcome           String
+  tokenId           String
+  strategyVersion   String
+  status            String                   @default("ENTRY_ATTEMPTING")
+  budget            Decimal
+  entryPrice        Decimal
+  entryCost         Decimal                  @default(0)
+  sharesBought      Decimal                  @default(0)
+  sharesSold        Decimal                  @default(0)
+  remainingShares   Decimal                  @default(0)
+  sellProceeds      Decimal                  @default(0)
+  estimatedFees     Decimal                  @default(0)
+  profit            Decimal?
+  roi               Decimal?
+  exitTrigger       String?
+  errorMessage      String?
+  openedAt          DateTime?
+  closedAt          DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  orders            LiveShortExitOrder[]
+
+  @@index([marketId])
+  @@index([assetSymbol])
+  @@index([status])
+  @@index([createdAt])
+  @@index([closedAt])
+}
+
+model LiveShortExitOrder {
+  id                String             @id @default(cuid())
+  tradeId           String
+  trade             LiveShortExitTrade @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+  side              String
+  externalOrderId   String?
+  status            String
+  requestedAmount   Decimal
+  requestedPrice    Decimal?
+  filledShares      Decimal            @default(0)
+  cashAmount        Decimal            @default(0)
+  averagePrice      Decimal?
+  responseData      String?
+  errorMessage      String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@index([tradeId])
+  @@index([side])
+  @@index([status])
+  @@index([externalOrderId])
+  @@index([createdAt])
+}
+
+model DailyExitCycle {
+  id                  String             @id @default(cuid())
+  marketId            String
+  market              Market             @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  assetSymbol         String
+  outcome             String
+  tokenId             String
+  strategyVersion     String             @default("DAILY_MULTI_CYCLE_NO_STOP_V1")
+  cycleNumber         Int
+  status              String             @default("OPEN")
+  stake               Decimal
+  entryPrice          Decimal
+  entrySpread         Decimal
+  shares              Decimal
+  buyFee              Decimal
+  entryCost           Decimal
+  entrySecondsToClose Int
+  exitPrice           Decimal?
+  sellFee             Decimal?
+  finalValue          Decimal?
+  profit              Decimal?
+  roi                 Decimal?
+  exitReason          String?
+  officialWinner      String?
+  resolutionSource    String?
+  openedAt            DateTime           @default(now())
+  closedAt            DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  quotes              DailyMarketQuote[]
+
+  @@unique([marketId, cycleNumber])
+  @@index([marketId])
+  @@index([assetSymbol])
+  @@index([outcome])
+  @@index([status])
+  @@index([strategyVersion])
+  @@index([createdAt])
+  @@index([closedAt])
+  @@index([status, marketId])
+}
+
+model DailyMarketQuote {
+  id             String          @id @default(cuid())
+  marketId       String
+  market         Market          @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  cycleId        String?
+  cycle          DailyExitCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  assetSymbol    String
+  outcome        String
+  bestBid        Decimal
+  bidSize        Decimal
+  bestAsk        Decimal
+  askSize        Decimal
+  spread         Decimal
+  secondsToClose Int
+  executable     Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+
+  @@index([marketId, outcome])
+  @@index([cycleId])
+  @@index([assetSymbol])
+  @@index([createdAt])
+  @@index([marketId, outcome, createdAt])
+}
+
+model RealisticShortExitBookUse {
+  id              String                      @id @default(cuid())
+  executionId     String
+  execution       RealisticShortExitExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  side            String
+  fingerprint     String
+  secondsToClose  Int
+  createdAt       DateTime                    @default(now())
+
+  @@unique([executionId, side, fingerprint])
+  @@index([executionId])
+  @@index([createdAt])
+}
+
+model ShortTermExitScenario {
+  id                String                   @id @default(cuid())
+  observationId     String
+  observation       ShortTermExitObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  thresholdSeconds  Int
+  status            String                   @default("PENDING")
+  exitReason        String?
+  exitBid           Decimal?
+  finalValue        Decimal?
+  profit            Decimal?
+  roi               Decimal?
+  evaluatedAt       DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  @@unique([observationId, thresholdSeconds])
+  @@index([thresholdSeconds])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ShortTermEntryQuote {
+  id              String   @id @default(cuid())
+  marketId        String
+  market          Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  assetSymbol     String
+  outcome         String
+  bestBid         Decimal
+  bidSize         Decimal
+  bestAsk         Decimal
+  askSize         Decimal
+  bidDepth5       Decimal?
+  askDepth5       Decimal?
+  depthImbalance  Decimal?
+  microPrice      Decimal?
+  spread          Decimal
+  liquidity       Decimal
+  secondsToClose  Int
+  executable      Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  @@index([marketId, outcome])
+  @@index([assetSymbol])
+  @@index([createdAt])
+  @@index([marketId, outcome, createdAt])
 }
 
 model ShortTermExitQuote {
@@ -259,12 +636,18 @@ model ShortTermExitQuote {
   bidSize         Decimal
   bestAsk         Decimal
   askSize         Decimal
+  bidDepth5       Decimal?
+  askDepth5       Decimal?
+  depthImbalance  Decimal?
+  microPrice      Decimal?
   spread          Decimal
   liquidity       Decimal
   secondsToClose  Int
   netExitValue    Decimal
   netProfit       Decimal
   netRoi          Decimal
+  orderFlowRiskScore   Int?
+  orderFlowRiskReasons String?
   executable      Boolean                  @default(true)
   createdAt       DateTime                 @default(now())
 

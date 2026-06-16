@@ -12,6 +12,12 @@ export interface AppConfig {
   appMode: AppMode;
   enableRealTrading: boolean;
   scanIntervalSeconds: number;
+  shortExitIntervalSeconds: number;
+  enableShortExitRealTrading: boolean;
+  shortExitRealAssets: CryptoAsset[];
+  shortExitRealStakeUsd: number;
+  shortExitRealEntryPriceMin: number;
+  shortExitRealEntryPriceMax: number;
   simulatedStakeUsd: number;
   realStakeUsd: number;
   maxSpread: number;
@@ -21,8 +27,24 @@ export interface AppConfig {
   prioritizeShortTermUpDown: boolean;
   backupEnabled: boolean;
   backupIntervalHours: number;
+  snapshotRawRetentionDays: number;
+  snapshotFullRetentionDays: number;
+  snapshotStructuredRetentionDays: number;
+  marketRawRetentionDays: number;
+  warnLogRetentionDays: number;
+  errorLogRetentionDays: number;
   logLevel: LogLevel;
   mlEnabled: boolean;
+  mlShadowEnabled: boolean;
+  mlOutcomeExecutionShadowEnabled: boolean;
+  mlOutcomeExecutionBudgetUsd: number;
+  mlOutcomeExecutionLatencyMs: number;
+  mlOutcomeExecutionMaxSlippage: number;
+  enableMlOutcomeRealTrading: boolean;
+  mlOutcomeRealAssets: CryptoAsset[];
+  mlOutcomeRealStakeUsd: number;
+  mlOutcomeRealMaxOpenTrades: number;
+  mlOutcomeRealDailyStopLossUsd: number;
   mlMinResolvedTrades: number;
   polygonPrivateKey: string | null;
   addressWallet: string | null;
@@ -102,8 +124,102 @@ function parseLogLevel(value: string | undefined): LogLevel {
 
 const rawAppMode = process.env.APP_MODE ?? DEFAULTS.appMode;
 const rawEnableRealTrading = parseBoolean(process.env.ENABLE_REAL_TRADING, DEFAULTS.enableRealTrading);
+const shortExitRealEntryPriceMin = parseNumber(
+  process.env.SHORT_EXIT_REAL_ENTRY_PRICE_MIN,
+  DEFAULTS.shortExitRealEntryPriceMin,
+  MIN_VALUES.shortExitRealEntryPrice
+);
+const shortExitRealEntryPriceMax = parseNumber(
+  process.env.SHORT_EXIT_REAL_ENTRY_PRICE_MAX,
+  DEFAULTS.shortExitRealEntryPriceMax,
+  MIN_VALUES.shortExitRealEntryPrice
+);
 
 validateAppMode(rawAppMode, rawEnableRealTrading);
+
+if (shortExitRealEntryPriceMin >= shortExitRealEntryPriceMax ||
+    shortExitRealEntryPriceMax >= 1) {
+  throw new Error(
+    "SHORT_EXIT_REAL_ENTRY_PRICE_MIN/MAX deben definir un rango valido dentro de (0, 1)."
+  );
+}
+
+if (
+  parseBoolean(
+    process.env.ENABLE_SHORT_EXIT_REAL_TRADING,
+    DEFAULTS.enableShortExitRealTrading
+  ) &&
+  (!rawEnableRealTrading || rawAppMode !== "LIVE_TRADING")
+) {
+  throw new Error(
+    "ENABLE_SHORT_EXIT_REAL_TRADING requiere APP_MODE=LIVE_TRADING y ENABLE_REAL_TRADING=true."
+  );
+}
+
+if (
+  parseBoolean(
+    process.env.ENABLE_ML_OUTCOME_REAL_TRADING,
+    DEFAULTS.enableMlOutcomeRealTrading
+  ) &&
+  (!rawEnableRealTrading || rawAppMode !== "LIVE_TRADING")
+) {
+  throw new Error(
+    "ENABLE_ML_OUTCOME_REAL_TRADING requiere APP_MODE=LIVE_TRADING y ENABLE_REAL_TRADING=true."
+  );
+}
+
+const retentionValues = {
+  snapshotRawRetentionDays: parseNumber(
+    process.env.SNAPSHOT_RAW_RETENTION_DAYS,
+    DEFAULTS.snapshotRawRetentionDays,
+    MIN_VALUES.retentionDays
+  ),
+  snapshotFullRetentionDays: parseNumber(
+    process.env.SNAPSHOT_FULL_RETENTION_DAYS,
+    DEFAULTS.snapshotFullRetentionDays,
+    MIN_VALUES.retentionDays
+  ),
+  snapshotStructuredRetentionDays: parseNumber(
+    process.env.SNAPSHOT_STRUCTURED_RETENTION_DAYS,
+    DEFAULTS.snapshotStructuredRetentionDays,
+    MIN_VALUES.retentionDays
+  ),
+  marketRawRetentionDays: parseNumber(
+    process.env.MARKET_RAW_RETENTION_DAYS,
+    DEFAULTS.marketRawRetentionDays,
+    MIN_VALUES.retentionDays
+  ),
+  warnLogRetentionDays: parseNumber(
+    process.env.WARN_LOG_RETENTION_DAYS,
+    DEFAULTS.warnLogRetentionDays,
+    MIN_VALUES.retentionDays
+  ),
+  errorLogRetentionDays: parseNumber(
+    process.env.ERROR_LOG_RETENTION_DAYS,
+    DEFAULTS.errorLogRetentionDays,
+    MIN_VALUES.retentionDays
+  )
+};
+
+if (
+  retentionValues.snapshotRawRetentionDays >
+    retentionValues.snapshotFullRetentionDays ||
+  retentionValues.snapshotFullRetentionDays >
+    retentionValues.snapshotStructuredRetentionDays
+) {
+  throw new Error(
+    "Snapshot retention must satisfy RAW <= FULL <= STRUCTURED."
+  );
+}
+
+if (
+  retentionValues.warnLogRetentionDays >
+  retentionValues.errorLogRetentionDays
+) {
+  throw new Error(
+    "WARN_LOG_RETENTION_DAYS must be <= ERROR_LOG_RETENTION_DAYS."
+  );
+}
 
 export const config: AppConfig = {
   databaseUrl: process.env.DATABASE_URL ?? DEFAULTS.databaseUrl,
@@ -114,6 +230,28 @@ export const config: AppConfig = {
     DEFAULTS.scanIntervalSeconds,
     MIN_VALUES.scanIntervalSeconds
   ),
+  shortExitIntervalSeconds: parseNumber(
+    process.env.SHORT_EXIT_INTERVAL_SECONDS,
+    DEFAULTS.shortExitIntervalSeconds,
+    MIN_VALUES.shortExitIntervalSeconds
+  ),
+  enableShortExitRealTrading: parseBoolean(
+    process.env.ENABLE_SHORT_EXIT_REAL_TRADING,
+    DEFAULTS.enableShortExitRealTrading
+  ),
+  shortExitRealAssets: parsePriorityAssets(
+    process.env.SHORT_EXIT_REAL_ASSETS ?? DEFAULTS.shortExitRealAssets.join(",")
+  ),
+  shortExitRealStakeUsd: Math.min(
+    3,
+    parseNumber(
+      process.env.SHORT_EXIT_REAL_STAKE_USD,
+      DEFAULTS.shortExitRealStakeUsd,
+      MIN_VALUES.shortExitRealStakeUsd
+    )
+  ),
+  shortExitRealEntryPriceMin,
+  shortExitRealEntryPriceMax,
   simulatedStakeUsd: parseNumber(
     process.env.SIMULATED_STAKE_USD,
     DEFAULTS.simulatedStakeUsd,
@@ -138,8 +276,58 @@ export const config: AppConfig = {
     DEFAULTS.backupIntervalHours,
     MIN_VALUES.backupIntervalHours
   ),
+  ...retentionValues,
   logLevel: parseLogLevel(process.env.LOG_LEVEL),
   mlEnabled: parseBoolean(process.env.ML_ENABLED, DEFAULTS.mlEnabled),
+  mlShadowEnabled: parseBoolean(
+    process.env.ML_SHADOW_ENABLED,
+    DEFAULTS.mlShadowEnabled
+  ),
+  mlOutcomeExecutionShadowEnabled: parseBoolean(
+    process.env.ML_OUTCOME_EXECUTION_SHADOW_ENABLED,
+    DEFAULTS.mlOutcomeExecutionShadowEnabled
+  ),
+  mlOutcomeExecutionBudgetUsd: parseNumber(
+    process.env.ML_OUTCOME_EXECUTION_BUDGET_USD,
+    DEFAULTS.mlOutcomeExecutionBudgetUsd,
+    MIN_VALUES.mlOutcomeExecutionBudgetUsd
+  ),
+  mlOutcomeExecutionLatencyMs: parseNumber(
+    process.env.ML_OUTCOME_EXECUTION_LATENCY_MS,
+    DEFAULTS.mlOutcomeExecutionLatencyMs,
+    MIN_VALUES.mlOutcomeExecutionLatencyMs
+  ),
+  mlOutcomeExecutionMaxSlippage: parseNumber(
+    process.env.ML_OUTCOME_EXECUTION_MAX_SLIPPAGE,
+    DEFAULTS.mlOutcomeExecutionMaxSlippage,
+    MIN_VALUES.mlOutcomeExecutionMaxSlippage
+  ),
+  enableMlOutcomeRealTrading: parseBoolean(
+    process.env.ENABLE_ML_OUTCOME_REAL_TRADING,
+    DEFAULTS.enableMlOutcomeRealTrading
+  ),
+  mlOutcomeRealAssets: parsePriorityAssets(
+    process.env.ML_OUTCOME_REAL_ASSETS ??
+      DEFAULTS.mlOutcomeRealAssets.join(",")
+  ),
+  mlOutcomeRealStakeUsd: Math.min(
+    3,
+    parseNumber(
+      process.env.ML_OUTCOME_REAL_STAKE_USD,
+      DEFAULTS.mlOutcomeRealStakeUsd,
+      MIN_VALUES.mlOutcomeRealStakeUsd
+    )
+  ),
+  mlOutcomeRealMaxOpenTrades: parseNumber(
+    process.env.ML_OUTCOME_REAL_MAX_OPEN_TRADES,
+    DEFAULTS.mlOutcomeRealMaxOpenTrades,
+    MIN_VALUES.mlOutcomeRealMaxOpenTrades
+  ),
+  mlOutcomeRealDailyStopLossUsd: parseNumber(
+    process.env.ML_OUTCOME_REAL_DAILY_STOP_LOSS_USD,
+    DEFAULTS.mlOutcomeRealDailyStopLossUsd,
+    MIN_VALUES.mlOutcomeRealDailyStopLossUsd
+  ),
   mlMinResolvedTrades: parseNumber(
     process.env.ML_MIN_RESOLVED_TRADES,
     DEFAULTS.mlMinResolvedTrades,

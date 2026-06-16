@@ -19,7 +19,6 @@ import { RiskAssessment, RiskService } from "../risk/risk.service";
 import { SignalEngine } from "../signals/signal.engine";
 import { SignalInput, SignalResult } from "../signals/signal.types";
 import { ObservationEvaluationService } from "../simulations/observation-evaluation.service";
-import { ShortTermExitObservationService } from "../simulations/short-term-exit-observation.service";
 import { SimulationService } from "../simulations/simulation.service";
 import { PolymarketTradingService } from "../trading/polymarket-trading.service";
 import { RealOrderService } from "../trading/real-order.service";
@@ -53,6 +52,8 @@ const UP_DOWN_TARGET_CAPTURE_WINDOW_MS = 60 * 1000;
 const UP_DOWN_5M_WINDOW_MS = 5 * 60 * 1000;
 const MIN_SECONDS_TO_CLOSE_FOR_OPERATIONAL_SIGNAL = 20;
 const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]);
+export const OUTCOME_PREDICTION_CHECKPOINTS = [180, 120, 60, 30] as const;
+const OUTCOME_CHECKPOINT_MAX_LATENESS_SECONDS = 45;
 
 export class CryptoMarketScannerJob {
   private readonly polymarketClient = new PolymarketClient();
@@ -64,7 +65,6 @@ export class CryptoMarketScannerJob {
   private readonly featureBuilderService = new FeatureBuilderService();
   private readonly officialTargetResolverService: OfficialTargetResolverService;
   private readonly cryptoPriceService: CryptoPriceService;
-  private readonly shortTermExitObservationService: ShortTermExitObservationService;
   private readonly lastSignalByMarket = new Map<string, number>();
   private lastHeavyDiscoveryAt = 0;
   private readonly tradingService: PolymarketTradingService | null = null;
@@ -75,7 +75,6 @@ export class CryptoMarketScannerJob {
     this.polymarketService = new PolymarketService(this.polymarketClient, this.logger);
     this.officialTargetResolverService = new OfficialTargetResolverService(this.logger);
     this.cryptoPriceService = new CryptoPriceService(this.logger);
-    this.shortTermExitObservationService = new ShortTermExitObservationService(this.logger);
 
     if (config.enableRealTrading && config.polygonPrivateKey && config.addressWallet) {
       const service = new PolymarketTradingService(
@@ -101,7 +100,11 @@ export class CryptoMarketScannerJob {
   async runOnce(): Promise<void> {
     this.logger.info("Crypto market scanner started.");
 
-    const fastMarkets = await this.polymarketService.getFastCryptoUpDown5mMarkets();
+    const [fast5mMarkets, fast15mMarkets] = await Promise.all([
+      this.polymarketService.getFastCryptoUpDown5mMarkets(),
+      this.polymarketService.getFastCryptoUpDown15mMarkets()
+    ]);
+    const fastMarkets = [...fast5mMarkets, ...fast15mMarkets];
     const fastQueue = this.buildScanQueue(fastMarkets, []);
     const processedMarketKeys = new Set(fastQueue.map((market) => this.getMarketKey(market)));
     let processedMarkets = await this.processMarkets(fastQueue);
@@ -127,9 +130,6 @@ export class CryptoMarketScannerJob {
     );
 
     processedMarkets += await this.processMarkets(heavyQueue);
-    const closedShortTermObservations =
-      await this.shortTermExitObservationService.closeExpiredObservations();
-
     if (processedMarkets === 0) {
       this.logger.warn("No active crypto markets found from Polymarket.");
       return;
@@ -137,9 +137,10 @@ export class CryptoMarketScannerJob {
 
     this.logger.info("Crypto market scanner finished.", {
       fastMarkets: fastMarkets.length,
+      fast5mMarkets: fast5mMarkets.length,
+      fast15mMarkets: fast15mMarkets.length,
       heavyMarkets: heavyMarkets.length,
-      processedMarkets,
-      closedShortTermObservations
+      processedMarkets
     });
   }
 
@@ -195,26 +196,20 @@ export class CryptoMarketScannerJob {
     }
 
     const runtimeData = await this.loadRuntimeData(normalizedMarket);
-    try {
-      await this.shortTermExitObservationService.observeMarket({
-        marketId: savedMarket.id,
-        assetSymbol: normalizedMarket.assetSymbol,
-        liquidity: runtimeData.liquidity,
-        secondsToClose: runtimeData.secondsToClose,
-        upOrderBook: runtimeData.upOrderBook,
-        downOrderBook: runtimeData.downOrderBook
-      });
-    } catch (error) {
-      this.logger.error("Short-term exit observation failed; regular scanner will continue.", error, {
-        marketId: savedMarket.id,
-        assetSymbol: normalizedMarket.assetSymbol
-      });
-    }
-
     const market = await this.resolveUpDownTargetPrice(savedMarket.id, normalizedMarket, runtimeData);
     const marketKey = this.getMarketKey(market);
     const signalInput = this.toSignalInput(savedMarket.id, market, runtimeData);
     const signal = await this.signalEngine.generateSignal(signalInput);
+    const edgeOnlyObservationType = getEdgeOnlyCryptoObservationType(signalInput, signal);
+
+    if (edgeOnlyObservationType) {
+      signal.features = {
+        ...signal.features,
+        entryRule: edgeOnlyObservationType,
+        edgeOnlyObservation: true
+      };
+    }
+
     const riskAssessment = await this.riskService.evaluateSignal(signalInput, signal, savedMarket.category);
 
     if (this.forceTestTradeRemaining > 0 && this.tradingService) {
@@ -289,7 +284,19 @@ export class CryptoMarketScannerJob {
       const entryRule = this.getEntryRule(signal);
       const historicalGateObservationType = this.getHistoricalGateObservationType(signal);
 
-      if (historicalGateObservationType) {
+      if (entryRule === EDGE_ONLY_CRYPTO_OBSERVATION_TYPE) {
+        const observation = await this.observationEvaluationService.createPendingObservation(
+          prediction.id,
+          savedMarket.id,
+          entryRule,
+          EDGE_ONLY_CRYPTO_STAKE_USD,
+          signal.entryPrice
+        );
+
+        simulationText =
+          `Edge-only crypto observation ${observation.id}, hypothetical stake $${EDGE_ONLY_CRYPTO_STAKE_USD}, ` +
+          `shares ${observation.shares.toString()}.`;
+      } else if (historicalGateObservationType) {
         const staticRiskAssessment = this.riskService.evaluateStaticSimulationRequest({
           marketId: savedMarket.id,
           marketCategory: market.category,
@@ -820,6 +827,20 @@ export class CryptoMarketScannerJob {
       return false;
     }
 
+    if (this.getEntryRule(signal) === EDGE_ONLY_CRYPTO_OBSERVATION_TYPE) {
+      const existingObservation = await prisma.observationEvaluation.findFirst({
+        where: {
+          marketId,
+          observationType: EDGE_ONLY_CRYPTO_OBSERVATION_TYPE
+        },
+        select: { id: true }
+      });
+
+      if (existingObservation) {
+        return false;
+      }
+    }
+
     const previousPrediction = await prisma.botPrediction.findFirst({
       where: {
         marketId
@@ -956,7 +977,7 @@ export class CryptoMarketScannerJob {
   private isFastUpDownMarket(market: NormalizedCryptoMarket): boolean {
     return (
       market.marketType === "UP_DOWN_SHORT_TERM" &&
-      market.timeframe === "5m" &&
+      (market.timeframe === "5m" || market.timeframe === "15m") &&
       FAST_UP_DOWN_ASSETS.has(market.assetSymbol)
     );
   }
@@ -1333,10 +1354,48 @@ export function hasPersistablePredictionRule(signal: SignalResult): boolean {
   );
 }
 
+export function getDueOutcomePredictionCheckpoints(
+  secondsToClose: number
+): number[] {
+  const nearest = OUTCOME_PREDICTION_CHECKPOINTS
+    .filter(
+      (checkpoint) =>
+        secondsToClose <= checkpoint &&
+        checkpoint - secondsToClose <= OUTCOME_CHECKPOINT_MAX_LATENESS_SECONDS
+    )
+    .sort(
+      (left, right) =>
+        left - secondsToClose - (right - secondsToClose)
+    )[0];
+
+  return nearest === undefined ? [] : [nearest];
+}
+
 const OBSERVABLE_HISTORICAL_GATE_RULES = new Set([
   "ENTER_SMALL_STANDARD",
   "ENTER_MODERATE_STANDARD"
 ]);
+export const EDGE_ONLY_CRYPTO_OBSERVATION_TYPE = "OBSERVE_EDGE_ONLY_ALL_CRYPTO_V1";
+const EDGE_ONLY_CRYPTO_MIN_EDGE = 0.03;
+const EDGE_ONLY_CRYPTO_STAKE_USD = 5;
+
+export function getEdgeOnlyCryptoObservationType(
+  input: SignalInput,
+  signal: SignalResult
+): string | null {
+  if (
+    input.marketType !== "UP_DOWN_SHORT_TERM" ||
+    !FAST_UP_DOWN_ASSETS.has(input.assetSymbol) ||
+    input.targetPriceTrustedForLearning !== true ||
+    signal.edge < EDGE_ONLY_CRYPTO_MIN_EDGE ||
+    signal.entryPrice <= 0 ||
+    signal.entryPrice >= 1
+  ) {
+    return null;
+  }
+
+  return EDGE_ONLY_CRYPTO_OBSERVATION_TYPE;
+}
 
 export function getHistoricalGateObservationType(signal: SignalResult): string | null {
   const features = signal.features as Record<string, unknown>;

@@ -45,6 +45,10 @@ export interface BotPredictionFeatures {
   similarCases: number | null;
   historicalWinRate: number | null;
   historicalProfit: number | null;
+  observationType: string | null;
+  checkpointSeconds: number | null;
+  sourceRecommendation: string | null;
+  sourceEntryRule: string | null;
 }
 
 export class FeatureBuilderService {
@@ -98,7 +102,11 @@ export class FeatureBuilderService {
       confidenceAdjustment: normalizeNumber(input.signal.confidenceAdjustment),
       similarCases: getNumberFeature(input.signal.features, "similarCases"),
       historicalWinRate: getNumberFeature(input.signal.features, "historicalWinRate"),
-      historicalProfit: getNumberFeature(input.signal.features, "historicalProfit")
+      historicalProfit: getNumberFeature(input.signal.features, "historicalProfit"),
+      observationType: getStringFeature(input.signal.features, "observationType"),
+      checkpointSeconds: getNumberFeature(input.signal.features, "checkpointSeconds"),
+      sourceRecommendation: getStringFeature(input.signal.features, "sourceRecommendation"),
+      sourceEntryRule: getStringFeature(input.signal.features, "sourceEntryRule")
     };
   }
 

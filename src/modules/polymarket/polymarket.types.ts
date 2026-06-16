@@ -84,6 +84,10 @@ export interface PolymarketOrderBook {
   tokenId: string;
   bids: PolymarketOrderBookLevel[];
   asks: PolymarketOrderBookLevel[];
+  minOrderSize?: number | null;
+  tickSize?: number | null;
+  timestamp?: string | null;
+  hash?: string | null;
   raw?: unknown;
 }
 
