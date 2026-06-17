@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { CryptoAsset } from "../../config/assets";
+import { CryptoAsset, SUPPORTED_CRYPTO_ASSETS } from "../../config/assets";
 import { LoggerService } from "../logger/logger.service";
 import { parseRtdsChainlinkPoints } from "./official-target-resolver.service";
 
@@ -22,6 +22,175 @@ const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
 const CACHE_TTL_MS = 20_000;
+const PERSISTENT_WS_RECONNECT_MS = 5_000;
+const PERSISTENT_WS_HEARTBEAT_MS = 30_000;
+
+// Persistent WebSocket manager for real-time Polymarket Chainlink prices
+class PersistentPriceWebSocket {
+  private ws: WebSocket | null = null;
+  private prices = new Map<CryptoAsset, CryptoSpotPrice>();
+  private subscribers = new Set<(asset: CryptoAsset, price: CryptoSpotPrice) => void>();
+  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private isConnecting = false;
+  private logger: LoggerService | null = null;
+
+  constructor() {}
+
+  setLogger(logger: LoggerService): void {
+    this.logger = logger;
+  }
+
+  start(): void {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    this.connect();
+  }
+
+  stop(): void {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+
+  getPrice(asset: CryptoAsset): CryptoSpotPrice | null {
+    return this.prices.get(asset) ?? null;
+  }
+
+  subscribe(callback: (asset: CryptoAsset, price: CryptoSpotPrice) => void): () => void {
+    this.subscribers.add(callback);
+    return () => {
+      this.subscribers.delete(callback);
+    };
+  }
+
+  private connect(): void {
+    if (this.isConnecting) return;
+    this.isConnecting = true;
+
+    try {
+      this.ws = new WebSocket(RTDS_WS_URL);
+
+      this.ws.on("open", () => {
+        this.isConnecting = false;
+        this.logger?.info("Persistent Polymarket price WebSocket connected.");
+        this.subscribeToAllAssets();
+        this.startHeartbeat();
+      });
+
+      this.ws.on("message", (data) => {
+        const text = data.toString();
+        if (!text.trim()) return;
+
+        try {
+          // Parse all asset prices from the message
+          for (const asset of SUPPORTED_CRYPTO_ASSETS) {
+            const symbol = `${asset.toLowerCase()}/usd`;
+            const points = parseRtdsChainlinkPoints(text, symbol);
+            if (points.length > 0) {
+              const latest = points.reduce((a, b) => a.timestamp > b.timestamp ? a : b);
+              const price: CryptoSpotPrice = {
+                assetSymbol: asset,
+                priceUsd: latest.value,
+                source: "POLYMARKET_CHAINLINK",
+                fetchedAt: new Date()
+              };
+              this.prices.set(asset, price);
+              this.notifySubscribers(asset, price);
+            }
+          }
+        } catch {
+          // Ignore parse errors for individual messages
+        }
+      });
+
+      this.ws.on("error", (error) => {
+        this.isConnecting = false;
+        this.logger?.warn("Persistent Polymarket price WebSocket error.", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        this.scheduleReconnect();
+      });
+
+      this.ws.on("close", () => {
+        this.isConnecting = false;
+        this.stopHeartbeat();
+        this.scheduleReconnect();
+      });
+    } catch (error) {
+      this.isConnecting = false;
+      this.logger?.error("Failed to create persistent WebSocket.", error);
+      this.scheduleReconnect();
+    }
+  }
+
+  private subscribeToAllAssets(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    const symbols = SUPPORTED_CRYPTO_ASSETS.map(asset => `${asset.toLowerCase()}/usd`);
+    
+    this.ws.send(JSON.stringify({
+      action: "subscribe",
+      subscriptions: symbols.map(symbol => ({
+        topic: "crypto_prices_chainlink",
+        type: "*",
+        filters: JSON.stringify({ symbol })
+      }))
+    }));
+
+    this.logger?.info("Subscribed to all crypto price feeds.", {
+      assets: SUPPORTED_CRYPTO_ASSETS
+    });
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatInterval = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.ping();
+      }
+    }, PERSISTENT_WS_HEARTBEAT_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimeout) return;
+    
+    this.reconnectTimeout = setTimeout(() => {
+      this.reconnectTimeout = null;
+      this.connect();
+    }, PERSISTENT_WS_RECONNECT_MS);
+  }
+
+  private notifySubscribers(asset: CryptoAsset, price: CryptoSpotPrice): void {
+    for (const callback of this.subscribers) {
+      try {
+        callback(asset, price);
+      } catch {
+        // Ignore subscriber errors
+      }
+    }
+  }
+}
+
+// Singleton instance
+export const persistentPriceWs = new PersistentPriceWebSocket();
 
 const COINGECKO_IDS: Partial<Record<CryptoAsset, string>> = {
   BTC: "bitcoin",
@@ -44,13 +213,22 @@ const COINBASE_PAIRS: Partial<Record<CryptoAsset, string>> = {
 
 export class CryptoPriceService {
   private readonly cache = new Map<CryptoAsset, CachedPrice>();
+  private static persistentWsStarted = false;
 
   constructor(
     private readonly logger?: LoggerService,
     private readonly timeoutMs = DEFAULT_TIMEOUT_MS,
     private readonly maxRetries = DEFAULT_MAX_RETRIES,
     private readonly retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS
-  ) {}
+  ) {
+    // Start persistent WebSocket only once
+    if (!CryptoPriceService.persistentWsStarted && logger) {
+      CryptoPriceService.persistentWsStarted = true;
+      persistentPriceWs.setLogger(logger);
+      persistentPriceWs.start();
+      logger.info("Started persistent Polymarket price WebSocket.");
+    }
+  }
 
   async getSpotPriceUsd(assetSymbol: CryptoAsset): Promise<CryptoSpotPrice> {
     const cached = this.cache.get(assetSymbol);
@@ -58,6 +236,17 @@ export class CryptoPriceService {
       return cached.value;
     }
 
+    // First, try to get price from persistent WebSocket (real-time Polymarket data)
+    const persistentPrice = persistentPriceWs.getPrice(assetSymbol);
+    if (persistentPrice && persistentPrice.priceUsd !== null) {
+      // Only use if data is recent (less than 10 seconds old)
+      const ageMs = Date.now() - persistentPrice.fetchedAt.getTime();
+      if (ageMs < 10_000) {
+        return this.cacheAndReturn(assetSymbol, persistentPrice.priceUsd, "POLYMARKET_CHAINLINK");
+      }
+    }
+
+    // Fallback to creating a new connection (original behavior)
     const chainlinkPrice = await this.fetchPolymarketChainlinkPrice(assetSymbol);
     if (chainlinkPrice !== null) {
       return this.cacheAndReturn(assetSymbol, chainlinkPrice, "POLYMARKET_CHAINLINK");
@@ -143,6 +332,26 @@ export class CryptoPriceService {
     }
 
     return this.cacheAndReturn(assetSymbol, null, "ERROR");
+  }
+
+  async getCoinbaseSpotPriceUsd(assetSymbol: CryptoAsset): Promise<CryptoSpotPrice> {
+    const coinbasePair = COINBASE_PAIRS[assetSymbol];
+    if (!coinbasePair) {
+      return {
+        assetSymbol,
+        priceUsd: null,
+        source: "UNSUPPORTED",
+        fetchedAt: new Date()
+      };
+    }
+
+    const priceUsd = await this.fetchCoinbasePrice(assetSymbol, coinbasePair);
+    return {
+      assetSymbol,
+      priceUsd,
+      source: priceUsd === null ? "ERROR" : "COINBASE",
+      fetchedAt: new Date()
+    };
   }
 
   private fetchPolymarketChainlinkPrice(assetSymbol: CryptoAsset): Promise<number | null> {

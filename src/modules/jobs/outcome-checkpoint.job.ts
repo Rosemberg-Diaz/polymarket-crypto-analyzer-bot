@@ -4,6 +4,7 @@ import { config } from "../../config/env";
 import { prisma } from "../../database/client";
 import { LoggerService } from "../logger/logger.service";
 import { OutcomeModelService } from "../learning/outcome-model.service";
+import { CryptoPriceService } from "../market-data/crypto-price.service";
 import { PolymarketClient } from "../polymarket/polymarket.client";
 import { MlOutcomeShadowExecutionService } from "../simulations/ml-outcome-shadow-execution.service";
 import { ObservationEvaluationService } from "../simulations/observation-evaluation.service";
@@ -17,12 +18,14 @@ export class OutcomeCheckpointJob {
   private readonly client = new PolymarketClient();
   private readonly observationService = new ObservationEvaluationService();
   private readonly outcomeModelService: OutcomeModelService;
+  private readonly cryptoPriceService: CryptoPriceService;
   private readonly shadowExecutionService: MlOutcomeShadowExecutionService;
   private readonly liveTradingService: LiveOutcomeCheckpointTradingService;
   private readonly tradingService: PolymarketTradingService | null;
 
   constructor(private readonly logger: LoggerService) {
     this.outcomeModelService = new OutcomeModelService(logger);
+    this.cryptoPriceService = new CryptoPriceService(logger);
     this.shadowExecutionService = new MlOutcomeShadowExecutionService(logger);
     if (
       config.enableMlOutcomeRealTrading &&
@@ -222,6 +225,18 @@ export class OutcomeCheckpointJob {
     const distanceToTarget = currentAssetPrice - candidate.targetPrice;
     const distanceToTargetPercent =
       distanceToTarget / candidate.targetPrice;
+    const coinbaseSpotPrice = await this.cryptoPriceService.getCoinbaseSpotPriceUsd(
+      candidate.assetSymbol
+    );
+    const coinbaseDistanceToTarget = coinbaseSpotPrice.priceUsd === null
+      ? null
+      : coinbaseSpotPrice.priceUsd - candidate.targetPrice;
+    const coinbaseDistanceToTargetPercent = coinbaseDistanceToTarget === null
+      ? null
+      : coinbaseDistanceToTarget / candidate.targetPrice;
+    const coinbasePredictedOutcome = coinbaseSpotPrice.priceUsd === null
+      ? null
+      : coinbaseSpotPrice.priceUsd > candidate.targetPrice ? "UP" : "DOWN";
     const targetMetadata = readTargetMetadata(
       candidate.market.snapshots[0]?.rawData
     );
@@ -242,6 +257,25 @@ export class OutcomeCheckpointJob {
       impliedProbabilityUp,
       checkpointSeconds: candidate.checkpointSeconds
     });
+
+    // Soft trend validation: check if price has been consistently above/below target
+    const trendValidation = await this.validateTrend(
+      candidate.market.id,
+      candidate.targetPrice,
+      currentAssetPrice,
+      mlScore?.predictedOutcome ?? null,
+      candidate.secondsToClose
+    );
+    if (!trendValidation.allowed) {
+      this.logger.info("ML outcome trade filtered by trend validation.", {
+        marketId: candidate.market.id,
+        assetSymbol: candidate.market.assetSymbol,
+        predictedOutcome: mlScore?.predictedOutcome,
+        reason: trendValidation.reason
+      });
+      return;
+    }
+
     const mlOutcomeEntryPrice = mlScore?.predictedOutcome === "UP"
       ? upPrice
       : mlScore?.predictedOutcome === "DOWN"
@@ -259,6 +293,12 @@ export class OutcomeCheckpointJob {
       targetPriceSource: targetMetadata.source,
       targetPriceTrustedForLearning: targetMetadata.trusted,
       currentAssetPrice,
+      coinbasePriceUsd: coinbaseSpotPrice.priceUsd,
+      coinbasePriceSource: coinbaseSpotPrice.source,
+      coinbasePriceFetchedAt: coinbaseSpotPrice.fetchedAt.toISOString(),
+      coinbaseDistanceToTarget,
+      coinbaseDistanceToTargetPercent,
+      coinbasePredictedOutcome,
       distanceToTarget,
       distanceToTargetPercent,
       secondsToClose: candidate.secondsToClose,
@@ -352,7 +392,11 @@ export class OutcomeCheckpointJob {
       const tokenId = mlScore.predictedOutcome === "UP"
         ? upOutcome.externalTokenId
         : downOutcome.externalTokenId;
-      await sleep(config.mlOutcomeExecutionLatencyMs);
+      // Skip latency sleep for real trading - only simulate in shadow mode
+      const isRealTrading = config.enableRealTrading && config.enableMlOutcomeRealTrading;
+      if (!isRealTrading) {
+        await sleep(config.mlOutcomeExecutionLatencyMs);
+      }
       const delayedOrderBook = await this.client.getOrderBook(tokenId);
       const shadowExecution = await this.shadowExecutionService.createForPrediction({
         predictionId: prediction.id,
@@ -387,6 +431,70 @@ export class OutcomeCheckpointJob {
       mlProbabilityUp: mlScore?.probabilityUp,
       mlOutcomeEntryPrice
     });
+  }
+
+  private async validateTrend(
+    marketId: string,
+    targetPrice: number,
+    currentAssetPrice: number,
+    predictedOutcome: string | null,
+    secondsToClose: number
+  ): Promise<{ allowed: boolean; reason?: string }> {
+    if (!predictedOutcome) {
+      return { allowed: true };
+    }
+
+    // Get recent snapshots to check price trend
+    const recentSnapshots = await prisma.marketSnapshot.findMany({
+      where: {
+        marketId,
+        createdAt: {
+          gte: new Date(Date.now() - 120_000) // Last 2 minutes
+        }
+      },
+      orderBy: { createdAt: "asc" },
+      take: 20
+    });
+
+    if (recentSnapshots.length < 3) {
+      return { allowed: true };
+    }
+
+    // Count how many times price was above/below target
+    let aboveCount = 0;
+    let belowCount = 0;
+    for (const snapshot of recentSnapshots) {
+      const price = Number(snapshot.currentAssetPrice);
+      if (price > targetPrice) {
+        aboveCount++;
+      } else if (price < targetPrice) {
+        belowCount++;
+      }
+    }
+
+    const totalSnapshots = recentSnapshots.length;
+    const aboveRatio = aboveCount / totalSnapshots;
+    const belowRatio = belowCount / totalSnapshots;
+
+    // Soft validation: only filter if price has been consistently against prediction
+    // for more than 90% of recent snapshots
+    const CONSISTENCY_THRESHOLD = 0.9;
+
+    if (predictedOutcome === "DOWN" && aboveRatio >= CONSISTENCY_THRESHOLD) {
+      return {
+        allowed: false,
+        reason: `Price consistently above target (${(aboveRatio * 100).toFixed(0)}% of last ${totalSnapshots} snapshots). Avoiding counter-trend DOWN trade.`
+      };
+    }
+
+    if (predictedOutcome === "UP" && belowRatio >= CONSISTENCY_THRESHOLD) {
+      return {
+        allowed: false,
+        reason: `Price consistently below target (${(belowRatio * 100).toFixed(0)}% of last ${totalSnapshots} snapshots). Avoiding counter-trend UP trade.`
+      };
+    }
+
+    return { allowed: true };
   }
 }
 
