@@ -115,16 +115,51 @@ describe("live outcome checkpoint pilot gate", () => {
     expect(result.allowed).toBe(false);
   });
 
-  it("blocks XRP 15m DOWN after the pilot segment was removed", () => {
-    const result = isLiveOutcomeCheckpointEligible(
-      execution({
-        assetSymbol: "XRP",
-        timeframe: "15m",
-        predictedOutcome: "DOWN",
-        checkpointSeconds: 120
-      })
-    );
-    expect(result.allowed).toBe(false);
+  it("allows whitelisted 15m segments at their specific checkpoints", () => {
+    const testCases = [
+      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 60 },
+      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 120 },
+      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 180 },
+      { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 60 },
+      { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 180 },
+      { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 120 },
+      { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 180 },
+      { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 60 },
+      { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 60 },
+      { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 120 },
+      { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 180 }
+    ];
+    for (const tc of testCases) {
+      const result = isLiveOutcomeCheckpointEligible(
+        execution({
+          assetSymbol: tc.assetSymbol,
+          timeframe: "15m",
+          predictedOutcome: tc.predictedOutcome,
+          checkpointSeconds: tc.checkpointSeconds
+        })
+      );
+      expect(result).toEqual({ allowed: true });
+    }
+  });
+
+  it("blocks 15m segments at non-allowed checkpoints", () => {
+    const blockedCases = [
+      { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 120 },
+      { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 120 },
+      { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 180 },
+      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 30 }
+    ];
+    for (const tc of blockedCases) {
+      const result = isLiveOutcomeCheckpointEligible(
+        execution({
+          assetSymbol: tc.assetSymbol,
+          timeframe: "15m",
+          predictedOutcome: tc.predictedOutcome,
+          checkpointSeconds: tc.checkpointSeconds
+        })
+      );
+      expect(result.allowed).toBe(false);
+    }
   });
 
   it("blocks assets outside the segment pilot", () => {

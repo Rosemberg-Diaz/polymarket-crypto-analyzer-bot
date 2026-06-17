@@ -43,8 +43,26 @@ export const DEFAULTS = {
     "ETH:5m:DOWN",
     "SOL:5m:UP",
     "SOL:5m:DOWN",
-    "XRP:5m:DOWN"
+    "XRP:5m:DOWN",
+    "SOL:15m:UP",
+    "BTC:15m:DOWN",
+    "ETH:15m:DOWN",
+    "ETH:15m:UP",
+    "XRP:15m:DOWN"
   ],
+  mlOutcomeRealSegmentCheckpoints: {
+    "BTC:5m:UP": [30],
+    "ETH:5m:UP": [30],
+    "ETH:5m:DOWN": [30],
+    "SOL:5m:UP": [30],
+    "SOL:5m:DOWN": [30],
+    "XRP:5m:DOWN": [30],
+    "SOL:15m:UP": [60, 120, 180],
+    "BTC:15m:DOWN": [60, 180],
+    "ETH:15m:DOWN": [120, 180],
+    "ETH:15m:UP": [60],
+    "XRP:15m:DOWN": [60, 120, 180]
+  } as Record<string, number[]>,
   mlOutcomeRealStakeUsd: 3,
   mlOutcomeRealMaxOpenTrades: 2,
   mlOutcomeRealDailyStopLossUsd: 9,

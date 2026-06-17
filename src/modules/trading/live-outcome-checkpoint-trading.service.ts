@@ -296,6 +296,14 @@ function isAllowedRealSegment(execution: MlOutcomeShadowExecution): boolean {
 function isAllowedCheckpointForTimeframe(
   execution: MlOutcomeShadowExecution
 ): boolean {
+  const segment = `${execution.assetSymbol}:${execution.timeframe}:${execution.predictedOutcome}`;
+  const allowedCheckpoints = config.mlOutcomeRealSegmentCheckpoints[segment];
+  
+  if (allowedCheckpoints) {
+    return allowedCheckpoints.includes(execution.checkpointSeconds);
+  }
+  
+  // Fallback to timeframe-based checkpoints
   const timeframe = execution.timeframe === "15m" ? "15m" :
     execution.timeframe === "5m" ? "5m" : null;
 

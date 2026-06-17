@@ -348,6 +348,7 @@ export const config: AppConfig = {
   mlOutcomeRealSegments: parseMlOutcomeRealSegments(
     process.env.ML_OUTCOME_REAL_SEGMENTS
   ),
+  mlOutcomeRealSegmentCheckpoints: DEFAULTS.mlOutcomeRealSegmentCheckpoints,
   mlOutcomeRealStakeUsd: Math.min(
     3,
     parseNumber(
