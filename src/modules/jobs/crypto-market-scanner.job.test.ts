@@ -80,20 +80,13 @@ describe("CryptoMarketScannerJob prediction persistence", () => {
   });
 
   it("captures fixed outcome checkpoints without backfilling stale windows", () => {
-    // 5m markets: only 30s checkpoint
-    expect(getDueOutcomePredictionCheckpoints(180, "5m")).toEqual([]);
-    expect(getDueOutcomePredictionCheckpoints(103, "5m")).toEqual([]);
-    expect(getDueOutcomePredictionCheckpoints(58, "5m")).toEqual([]);
-    expect(getDueOutcomePredictionCheckpoints(20, "5m")).toEqual([30]);
-    expect(getDueOutcomePredictionCheckpoints(10, "5m")).toEqual([30]);
-    expect(getDueOutcomePredictionCheckpoints(220, "5m")).toEqual([]);
-    
-    // 15m markets: 180s, 120s, 60s checkpoints (max lateness = 45s)
-    expect(getDueOutcomePredictionCheckpoints(180, "15m")).toEqual([180]);
-    expect(getDueOutcomePredictionCheckpoints(103, "15m")).toEqual([120]);
-    expect(getDueOutcomePredictionCheckpoints(58, "15m")).toEqual([60]);
-    expect(getDueOutcomePredictionCheckpoints(20, "15m")).toEqual([60]); // 60-20=40 <= 45 max lateness
-    expect(getDueOutcomePredictionCheckpoints(220, "15m")).toEqual([]);
+    // All timeframes use the same checkpoints: [180, 120, 60, 30]
+    expect(getDueOutcomePredictionCheckpoints(180)).toEqual([180]);
+    expect(getDueOutcomePredictionCheckpoints(103)).toEqual([120]);
+    expect(getDueOutcomePredictionCheckpoints(58)).toEqual([60]);
+    expect(getDueOutcomePredictionCheckpoints(20)).toEqual([30]);
+    expect(getDueOutcomePredictionCheckpoints(10)).toEqual([30]);
+    expect(getDueOutcomePredictionCheckpoints(220)).toEqual([]);
   });
 
   it("observes all fast crypto assets using only edge", () => {
