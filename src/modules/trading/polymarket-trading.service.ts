@@ -336,6 +336,15 @@ export class PolymarketTradingService {
     }
   }
 
+  async getOrderbook(tokenId: string): Promise<{ asks: { price: string; size: string }[]; bids: { price: string; size: string }[] } | null> {
+    if (!this.clobClient) return null;
+    try {
+      return await this.clobClient.getOrderBook(tokenId);
+    } catch {
+      return null;
+    }
+  }
+
   async placeFokMarketBuy(
     tokenId: string,
     budgetUsd: number,

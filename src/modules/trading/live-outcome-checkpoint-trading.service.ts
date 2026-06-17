@@ -11,6 +11,7 @@ const CHECKPOINTS_BY_TIMEFRAME = {
 } as const;
 const OPEN_STATUSES = ["ENTRY_ATTEMPTING", "OPEN"];
 const PRICE_EPSILON = 0.000001;
+const TAKER_FEE_RATE = 0.07;
 
 export type LiveOutcomeCheckpointGate =
   | { allowed: true }
@@ -52,7 +53,26 @@ export class LiveOutcomeCheckpointTradingService {
       return;
     }
 
-    const maxPrice = Number(execution.worstFillPrice);
+      const maxPrice = Number(execution.worstFillPrice);
+    const dynamicBudget = await this.computeDynamicBudget(execution.tokenId, maxPrice);
+    if (dynamicBudget === null) {
+      this.logger.info("Live outcome checkpoint skipped — orderbook unavailable for dynamic budget.", {
+        executionId: execution.id,
+        assetSymbol: execution.assetSymbol,
+        tokenId: execution.tokenId
+      });
+      return;
+    }
+    if (dynamicBudget < 1) {
+      this.logger.info("Live outcome checkpoint skipped — insufficient depth for $1 FOK.", {
+        executionId: execution.id,
+        assetSymbol: execution.assetSymbol,
+        dynamicBudget
+      });
+      return;
+    }
+
+    const budgetAdjusted = dynamicBudget < config.mlOutcomeRealStakeUsd;
     const trade = await prisma.liveOutcomeCheckpointTrade.create({
       data: {
         shadowExecutionId: execution.id,
@@ -64,15 +84,24 @@ export class LiveOutcomeCheckpointTradingService {
         tokenId: execution.tokenId,
         checkpointSeconds: execution.checkpointSeconds,
         status: "ENTRY_ATTEMPTING",
-        budget: decimal(config.mlOutcomeRealStakeUsd),
+        budget: decimal(dynamicBudget),
         requestedMaxPrice: decimal(maxPrice)
       }
     });
 
+    if (budgetAdjusted) {
+      this.logger.info("Dynamic FOK budget adjusted for shallow orderbook.", {
+        tradeId: trade.id,
+        originalBudget: config.mlOutcomeRealStakeUsd,
+        adjustedBudget: dynamicBudget,
+        maxPrice
+      });
+    }
+
     try {
       const result = await this.tradingService!.placeFokMarketBuy(
         execution.tokenId,
-        config.mlOutcomeRealStakeUsd,
+        dynamicBudget,
         maxPrice
       );
 
@@ -118,7 +147,7 @@ export class LiveOutcomeCheckpointTradingService {
         timeframe: execution.timeframe,
         predictedOutcome: execution.predictedOutcome,
         checkpointSeconds: execution.checkpointSeconds,
-        budgetUsd: config.mlOutcomeRealStakeUsd,
+        budgetUsd: dynamicBudget,
         filledShares: result.filledShares,
         cashAmount: result.cashAmount,
         averagePrice: result.averagePrice
@@ -136,6 +165,29 @@ export class LiveOutcomeCheckpointTradingService {
         executionId: execution.id
       });
     }
+  }
+
+  private async computeDynamicBudget(tokenId: string, maxPrice: number): Promise<number | null> {
+    const book = await this.tradingService?.getOrderbook(tokenId);
+    if (!book?.asks?.length) return null;
+    const sorted = book.asks
+      .map((l) => ({ price: Number(l.price), size: Number(l.size) }))
+      .filter((l) => Number.isFinite(l.price) && l.price > 0 && l.price <= maxPrice && Number.isFinite(l.size) && l.size > 0)
+      .sort((a, b) => a.price - b.price);
+    let totalCost = 0;
+    const maxBudget = config.mlOutcomeRealStakeUsd;
+    for (const { price, size } of sorted) {
+      const feePerShare = TAKER_FEE_RATE * price * (1 - price);
+      const costPerShare = price + feePerShare;
+      const levelCost = size * costPerShare;
+      const remaining = maxBudget - totalCost;
+      if (levelCost >= remaining) {
+        totalCost = maxBudget;
+        break;
+      }
+      totalCost += levelCost;
+    }
+    return Math.min(maxBudget, Math.max(1, Math.floor(totalCost)));
   }
 
   async evaluateGate(
