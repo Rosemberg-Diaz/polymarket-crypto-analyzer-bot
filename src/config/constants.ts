@@ -42,6 +42,7 @@ export const DEFAULTS = {
     "ETH:5m:UP",
     "ETH:5m:DOWN",
     "SOL:5m:UP",
+    "SOL:5m:DOWN",
     "XRP:5m:DOWN"
   ],
   mlOutcomeRealStakeUsd: 3,
