@@ -74,38 +74,37 @@ describe("live outcome checkpoint pilot gate", () => {
     expect(result.allowed).toBe(false);
   });
 
-  it("allows whitelisted SOL 15m UP markets at 180s, 120s and 60s", () => {
+  it("allows whitelisted 5m UP/DOWN markets at 30s", () => {
     for (const segment of [
+      { assetSymbol: "ETH", predictedOutcome: "UP" },
+      { assetSymbol: "ETH", predictedOutcome: "DOWN" },
       { assetSymbol: "SOL", predictedOutcome: "UP" },
-      { assetSymbol: "BTC", predictedOutcome: "DOWN" },
-      { assetSymbol: "ETH", predictedOutcome: "DOWN" }
+      { assetSymbol: "SOL", predictedOutcome: "DOWN" }
     ] as const) {
-      for (const checkpointSeconds of [180, 120, 60]) {
-        const result = isLiveOutcomeCheckpointEligible(
-          execution({
-            assetSymbol: segment.assetSymbol,
-            timeframe: "15m",
-            predictedOutcome: segment.predictedOutcome,
-            checkpointSeconds
-          })
-        );
-        expect(result).toEqual({ allowed: true });
-      }
+      const result = isLiveOutcomeCheckpointEligible(
+        execution({
+          assetSymbol: segment.assetSymbol,
+          timeframe: "5m",
+          predictedOutcome: segment.predictedOutcome,
+          checkpointSeconds: 30
+        })
+      );
+      expect(result).toEqual({ allowed: true });
     }
   });
 
-  it("blocks whitelisted 15m markets at 30s", () => {
+  it("blocks 5m markets at checkpoints other than 30s", () => {
     const result = isLiveOutcomeCheckpointEligible(
       execution({
-        assetSymbol: "SOL",
-        timeframe: "15m",
+        assetSymbol: "ETH",
+        timeframe: "5m",
         predictedOutcome: "UP",
-        checkpointSeconds: 30
+        checkpointSeconds: 120
       })
     );
     expect(result).toEqual({
       allowed: false,
-      reason: "CHECKPOINT_NOT_ALLOWED_FOR_TIMEFRAME:15m:30"
+      reason: "CHECKPOINT_NOT_ALLOWED_FOR_TIMEFRAME:5m:120"
     });
   });
 

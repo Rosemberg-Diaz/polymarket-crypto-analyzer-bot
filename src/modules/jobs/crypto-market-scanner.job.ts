@@ -52,7 +52,11 @@ const UP_DOWN_TARGET_CAPTURE_WINDOW_MS = 60 * 1000;
 const UP_DOWN_5M_WINDOW_MS = 5 * 60 * 1000;
 const MIN_SECONDS_TO_CLOSE_FOR_OPERATIONAL_SIGNAL = 20;
 const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]);
-export const OUTCOME_PREDICTION_CHECKPOINTS = [180, 120, 60, 30] as const;
+// Only profitable checkpoints per timeframe (historical analysis: 5m:30s=+$86, 15m:60s/120s/180s=profitable)
+export const OUTCOME_PREDICTION_CHECKPOINTS: Record<string, readonly number[]> = {
+  "5m": [30],
+  "15m": [180, 120, 60]
+} as const;
 const OUTCOME_CHECKPOINT_MAX_LATENESS_SECONDS = 45;
 
 export class CryptoMarketScannerJob {
@@ -1355,9 +1359,11 @@ export function hasPersistablePredictionRule(signal: SignalResult): boolean {
 }
 
 export function getDueOutcomePredictionCheckpoints(
-  secondsToClose: number
+  secondsToClose: number,
+  timeframe: string = "5m"
 ): number[] {
-  const nearest = OUTCOME_PREDICTION_CHECKPOINTS
+  const checkpoints = OUTCOME_PREDICTION_CHECKPOINTS[timeframe] ?? OUTCOME_PREDICTION_CHECKPOINTS["5m"];
+  const nearest = checkpoints
     .filter(
       (checkpoint) =>
         secondsToClose <= checkpoint &&

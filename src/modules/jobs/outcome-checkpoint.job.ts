@@ -107,7 +107,7 @@ export class OutcomeCheckpointJob {
         0,
         Math.floor((market.endDate.getTime() - Date.now()) / 1_000)
       );
-      const checkpoints = getDueOutcomePredictionCheckpoints(secondsToClose);
+      const checkpoints = getDueOutcomePredictionCheckpoints(secondsToClose, market.timeframe ?? "5m");
       const latestSnapshot = market.snapshots[0];
       const targetPrice = latestSnapshot?.targetPrice;
       const currentAssetPrice = latestSnapshot?.currentAssetPrice;
