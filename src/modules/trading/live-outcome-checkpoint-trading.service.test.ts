@@ -52,6 +52,21 @@ describe("live outcome checkpoint pilot gate", () => {
     expect(isLiveOutcomeCheckpointEligible(execution())).toEqual({ allowed: true });
   });
 
+  it("allows ETH 5m UP and DOWN only through the 30s checkpoint pilot", () => {
+    for (const predictedOutcome of ["UP", "DOWN"] as const) {
+      expect(
+        isLiveOutcomeCheckpointEligible(
+          execution({
+            assetSymbol: "ETH",
+            timeframe: "5m",
+            predictedOutcome,
+            checkpointSeconds: 30
+          })
+        )
+      ).toEqual({ allowed: true });
+    }
+  });
+
   it("blocks non-30s checkpoints for 5m markets", () => {
     const result = isLiveOutcomeCheckpointEligible(
       execution({ checkpointSeconds: 60 })
@@ -60,16 +75,22 @@ describe("live outcome checkpoint pilot gate", () => {
   });
 
   it("allows whitelisted SOL 15m UP markets at 180s, 120s and 60s", () => {
-    for (const checkpointSeconds of [180, 120, 60]) {
-      const result = isLiveOutcomeCheckpointEligible(
-        execution({
-          assetSymbol: "SOL",
-          timeframe: "15m",
-          predictedOutcome: "UP",
-          checkpointSeconds
-        })
-      );
-      expect(result).toEqual({ allowed: true });
+    for (const segment of [
+      { assetSymbol: "SOL", predictedOutcome: "UP" },
+      { assetSymbol: "BTC", predictedOutcome: "DOWN" },
+      { assetSymbol: "ETH", predictedOutcome: "DOWN" }
+    ] as const) {
+      for (const checkpointSeconds of [180, 120, 60]) {
+        const result = isLiveOutcomeCheckpointEligible(
+          execution({
+            assetSymbol: segment.assetSymbol,
+            timeframe: "15m",
+            predictedOutcome: segment.predictedOutcome,
+            checkpointSeconds
+          })
+        );
+        expect(result).toEqual({ allowed: true });
+      }
     }
   });
 
@@ -91,6 +112,18 @@ describe("live outcome checkpoint pilot gate", () => {
   it("blocks non-whitelisted BTC 5m DOWN markets", () => {
     const result = isLiveOutcomeCheckpointEligible(
       execution({ assetSymbol: "BTC", timeframe: "5m", predictedOutcome: "DOWN" })
+    );
+    expect(result.allowed).toBe(false);
+  });
+
+  it("blocks XRP 15m DOWN after the pilot segment was removed", () => {
+    const result = isLiveOutcomeCheckpointEligible(
+      execution({
+        assetSymbol: "XRP",
+        timeframe: "15m",
+        predictedOutcome: "DOWN",
+        checkpointSeconds: 120
+      })
     );
     expect(result.allowed).toBe(false);
   });

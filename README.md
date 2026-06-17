@@ -77,6 +77,13 @@ npm run pm2:stop
 npm run report
 ```
 
+## Contexto avanzado del bot
+
+Para un handoff tecnico completo a otra IA o a otro colaborador, revisar
+[`BOT_CONTEXT.md`](BOT_CONTEXT.md). Ese archivo describe el estado actual del
+piloto real, las tablas correctas para analisis, los tests, los comandos y que
+estrategias estan activas o solo en observacion.
+
 ## Scripts disponibles
 
 - `npm run dev`: inicia el bot con `tsx watch`.

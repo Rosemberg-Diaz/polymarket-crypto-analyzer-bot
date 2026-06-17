@@ -5,7 +5,7 @@ export const APP_NAME = "polymarket-crypto-analyzer-bot";
 export const DEFAULTS = {
   databaseUrl: "file:./dev.db",
   appMode: "SIMULATION_ONLY",
-  enableRealTrading: false,
+  enableRealTrading: true,
   scanIntervalSeconds: 10,
   shortExitIntervalSeconds: 5,
   enableShortExitRealTrading: false,
@@ -39,10 +39,12 @@ export const DEFAULTS = {
   mlOutcomeRealAssets: ["BTC", "ETH", "SOL"],
   mlOutcomeRealSegments: [
     "BTC:5m:UP",
+    "ETH:5m:UP",
+    "ETH:5m:DOWN",
     "SOL:5m:UP",
     "SOL:15m:UP",
     "BTC:15m:DOWN",
-    "XRP:15m:DOWN",
+    "ETH:15m:DOWN",
     "XRP:5m:DOWN"
   ],
   mlOutcomeRealStakeUsd: 3,
