@@ -3,6 +3,7 @@ import { NormalizedCryptoMarket } from "../crypto/crypto-market.types";
 import {
   OfficialTargetResolverService,
   findClosestPricePoint,
+  findFirstTickAfterBoundary,
   isOperationalUpDownTarget,
   isTrustedUpDownTargetForStorage,
   isWithinRtdsTargetRecoveryWindow,
@@ -113,6 +114,57 @@ describe("OfficialTargetResolverService", () => {
 
     expect(points).toHaveLength(3);
     expect(closest).toEqual({ timestamp: 1780593300000, value: 63515.350385 });
+  });
+
+  it("finds the first Chainlink tick AT or AFTER the boundary (Polymarket resolution)", () => {
+    const points = parseRtdsChainlinkPoints(JSON.stringify({
+      payload: {
+        symbol: "btc/usd",
+        data: [
+          { timestamp: 1780593299000, value: 63510.1 },
+          { timestamp: 1780593300000, value: 63515.350385 },
+          { timestamp: 1780593301000, value: 63516.2 }
+        ]
+      }
+    }), "btc/usd");
+
+    const boundary = 1780593300000;
+    const firstTick = findFirstTickAfterBoundary(points, boundary);
+
+    expect(firstTick).toEqual({ timestamp: 1780593300000, value: 63515.350385 });
+  });
+
+  it("finds the first tick after boundary when no exact match exists", () => {
+    const points = parseRtdsChainlinkPoints(JSON.stringify({
+      payload: {
+        symbol: "btc/usd",
+        data: [
+          { timestamp: 1780593299000, value: 63510.1 },
+          { timestamp: 1780593301000, value: 63516.2 }
+        ]
+      }
+    }), "btc/usd");
+
+    const boundary = 1780593300000;
+    const firstTick = findFirstTickAfterBoundary(points, boundary);
+
+    expect(firstTick).toEqual({ timestamp: 1780593301000, value: 63516.2 });
+  });
+
+  it("returns null when no points are at or after the boundary", () => {
+    const points = parseRtdsChainlinkPoints(JSON.stringify({
+      payload: {
+        symbol: "btc/usd",
+        data: [
+          { timestamp: 1780593299000, value: 63510.1 }
+        ]
+      }
+    }), "btc/usd");
+
+    const boundary = 1780593300000;
+    const firstTick = findFirstTickAfterBoundary(points, boundary);
+
+    expect(firstTick).toBeNull();
   });
 });
 

@@ -170,23 +170,23 @@ export class OfficialTargetResolverService {
 
     try {
       const points = await this.fetchRtdsChainlinkPricesWithRetry(symbol);
-      const closestPoint = findClosestPricePoint(points, windowStart.getTime());
+      const firstTick = findFirstTickAfterBoundary(points, windowStart.getTime());
 
-      if (!closestPoint || Math.abs(closestPoint.timestamp - windowStart.getTime()) > RTDS_TARGET_MAX_DISTANCE_MS) {
+      if (!firstTick || firstTick.timestamp - windowStart.getTime() > RTDS_TARGET_MAX_DISTANCE_MS) {
         return unresolved("RTDS did not provide a Chainlink price close enough to window start.");
       }
 
       return {
         ...resolved(
-          closestPoint.value,
+          firstTick.value,
           "POLYMARKET_RTDS_CHAINLINK",
           "Found Chainlink opening price through Polymarket live RTDS stream."
         ),
         rawEvidence: JSON.stringify({
           symbol,
           windowStart: windowStart.toISOString(),
-          point: closestPoint,
-          distanceMs: Math.abs(closestPoint.timestamp - windowStart.getTime())
+          point: firstTick,
+          distanceMs: firstTick.timestamp - windowStart.getTime()
         })
       };
     } catch (error) {
@@ -625,6 +625,11 @@ function parseRtdsPoint(value: unknown): ChainlinkPricePoint[] {
     timestamp: timestamp > 10_000_000_000 ? timestamp : timestamp * 1000,
     value: price
   }];
+}
+
+export function findFirstTickAfterBoundary(points: ChainlinkPricePoint[], boundaryTimestamp: number): ChainlinkPricePoint | null {
+  const sorted = [...points].sort((a, b) => a.timestamp - b.timestamp);
+  return sorted.find((point) => point.timestamp >= boundaryTimestamp) ?? null;
 }
 
 export function findClosestPricePoint(points: ChainlinkPricePoint[], timestamp: number): ChainlinkPricePoint | null {
