@@ -68,8 +68,8 @@ export class LiveOutcomeCheckpointTradingService {
       });
       return;
     }
-    if (dynamicBudget < 1) {
-      this.logger.info("Live outcome checkpoint skipped — insufficient depth for $1 FOK.", {
+    if (dynamicBudget < 1.50) {
+      this.logger.info("Live outcome checkpoint skipped — insufficient depth for minimum FOK.", {
         executionId: execution.id,
         assetSymbol: execution.assetSymbol,
         dynamicBudget
@@ -177,7 +177,7 @@ export class LiveOutcomeCheckpointTradingService {
     if (!book?.asks?.length) return null;
     const sorted = book.asks
       .map((l) => ({ price: Number(l.price), size: Number(l.size) }))
-      .filter((l) => Number.isFinite(l.price) && l.price > 0 && l.price <= maxPrice && Number.isFinite(l.size) && l.size > 0)
+      .filter((l) => Number.isFinite(l.price) && l.price > 0 && l.price <= maxPrice + 0.05 && Number.isFinite(l.size) && l.size > 0)
       .sort((a, b) => a.price - b.price);
     let totalCost = 0;
     const maxBudget = stakeUsd;
@@ -192,7 +192,7 @@ export class LiveOutcomeCheckpointTradingService {
       }
       totalCost += levelCost;
     }
-    return Math.min(maxBudget, Math.max(1, Math.floor(totalCost)));
+    return Math.min(maxBudget, Math.round(totalCost * 100) / 100);
   }
 
   async evaluateGate(
@@ -226,7 +226,7 @@ export class LiveOutcomeCheckpointTradingService {
     }
 
     const DOWN_MIN_CONFIDENCE_5M = 0.70;
-    const DOWN_MIN_CONFIDENCE_15M = 0.90;
+    const DOWN_MIN_CONFIDENCE_15M = 0.80;
     const downThreshold = execution.timeframe === "15m"
       ? DOWN_MIN_CONFIDENCE_15M
       : DOWN_MIN_CONFIDENCE_5M;
@@ -237,6 +237,21 @@ export class LiveOutcomeCheckpointTradingService {
       return {
         allowed: false,
         reason: `DOWN_CONFIDENCE_TOO_LOW:${execution.timeframe}:${(Number(execution.modelProbability) * 100).toFixed(1)}% < ${(downThreshold * 100).toFixed(0)}%`
+      };
+    }
+
+    const UP_MIN_CONFIDENCE_5M = 0.0;
+    const UP_MIN_CONFIDENCE_15M = 0.80;
+    const upThreshold = execution.timeframe === "15m"
+      ? UP_MIN_CONFIDENCE_15M
+      : UP_MIN_CONFIDENCE_5M;
+    if (
+      execution.predictedOutcome === "UP" &&
+      Number(execution.modelProbability) < upThreshold
+    ) {
+      return {
+        allowed: false,
+        reason: `UP_CONFIDENCE_TOO_LOW:${execution.timeframe}:${(Number(execution.modelProbability) * 100).toFixed(1)}% < ${(upThreshold * 100).toFixed(0)}%`
       };
     }
 

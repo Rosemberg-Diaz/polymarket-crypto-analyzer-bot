@@ -91,15 +91,31 @@ export class CryptoUpDownShortTermStrategy {
     const impliedProbability = entryPrice;
     const momentumScore = calculateMomentumScore(input, predictedOutcome);
     const volatilityPenalty = calculateVolatilityPenalty(input);
-    const strongDistance = absDistancePercent >= 0.004;
+    const is15m = input.timeframe === "15m";
+    const strongDistance = is15m ? absDistancePercent >= 0.001 : absDistancePercent >= 0.004;
     const highEntryPrice = entryPrice > 0.82;
 
-    if (entryPrice > 0.82 && !(secondsToClose < 45 && strongDistance)) {
-      return this.avoid(
-        "Precio de entrada mayor a 0.82 sin suficiente ventaja por tiempo/distancia",
-        input,
-        this.buildFeatures(input, distanceToTarget, absDistance, distancePercent, momentumScore, volatilityPenalty)
-      );
+    if (entryPrice > 0.82) {
+      if (is15m) {
+        const allowedCheckpoints = config.mlOutcomeRealSegmentCheckpoints[`${input.assetSymbol}:15m:${predictedOutcome}`] || [60, 120, 180];
+        const minCheckpoint = Math.min(...allowedCheckpoints);
+        const passesThreshold = secondsToClose !== null && secondsToClose <= minCheckpoint && strongDistance;
+        if (!passesThreshold) {
+          return this.avoid(
+            "Precio de entrada mayor a 0.82 sin suficiente ventaja por tiempo/distancia (15m)",
+            input,
+            this.buildFeatures(input, distanceToTarget, absDistance, distancePercent, momentumScore, volatilityPenalty)
+          );
+        }
+      } else {
+        if (!(secondsToClose < 45 && strongDistance)) {
+          return this.avoid(
+            "Precio de entrada mayor a 0.82 sin suficiente ventaja por tiempo/distancia",
+            input,
+            this.buildFeatures(input, distanceToTarget, absDistance, distancePercent, momentumScore, volatilityPenalty)
+          );
+        }
+      }
     }
 
     const botProbability = this.estimateBotProbability({

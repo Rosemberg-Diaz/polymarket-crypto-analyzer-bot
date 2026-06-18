@@ -484,26 +484,7 @@ export class CryptoMarketScannerJob {
       downOutcome?.externalTokenId ? this.polymarketClient.getOrderBook(downOutcome.externalTokenId) : null
     ]);
 
-    // Use Polymarket REST API for real-time price (matches what Polymarket uses for resolution)
-    let spotPrice;
-    if (market.endDate && market.marketType === "UP_DOWN_SHORT_TERM") {
-      spotPrice = await this.cryptoPriceService.getPolymarketCryptoPrice(
-        market.assetSymbol,
-        market.timeframe,
-        market.endDate
-      );
-      
-      // Fall back to WebSocket if REST API fails
-      if (spotPrice.priceUsd === null) {
-        this.logger?.warn("Polymarket REST API price unavailable, falling back to WebSocket.", {
-          assetSymbol: market.assetSymbol,
-          slug: market.slug
-        });
-        spotPrice = await this.cryptoPriceService.getSpotPriceUsd(market.assetSymbol);
-      }
-    } else {
-      spotPrice = await this.cryptoPriceService.getSpotPriceUsd(market.assetSymbol);
-    }
+    const spotPrice = await this.cryptoPriceService.getSpotPriceUsd(market.assetSymbol);
 
     const spreadValues = spreads.flatMap((spread) =>
       spread?.spread === null || spread?.spread === undefined ? [] : [spread.spread]
