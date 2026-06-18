@@ -13,6 +13,10 @@ const OPEN_STATUSES = ["ENTRY_ATTEMPTING", "OPEN"];
 const PRICE_EPSILON = 0.000001;
 const TAKER_FEE_RATE = 0.07;
 
+function getStakeForTimeframe(timeframe: string): number {
+  return timeframe === "15m" ? config.mlOutcomeRealStakeUsd15m : config.mlOutcomeRealStakeUsd;
+}
+
 export type LiveOutcomeCheckpointGate =
   | { allowed: true }
   | { allowed: false; reason: string };
@@ -54,7 +58,8 @@ export class LiveOutcomeCheckpointTradingService {
     }
 
       const maxPrice = Number(execution.worstFillPrice);
-    const dynamicBudget = await this.computeDynamicBudget(execution.tokenId, maxPrice);
+    const stakeForTimeframe = getStakeForTimeframe(execution.timeframe);
+    const dynamicBudget = await this.computeDynamicBudget(execution.tokenId, maxPrice, stakeForTimeframe);
     if (dynamicBudget === null) {
       this.logger.info("Live outcome checkpoint skipped — orderbook unavailable for dynamic budget.", {
         executionId: execution.id,
@@ -72,7 +77,7 @@ export class LiveOutcomeCheckpointTradingService {
       return;
     }
 
-    const budgetAdjusted = dynamicBudget < config.mlOutcomeRealStakeUsd;
+    const budgetAdjusted = dynamicBudget < stakeForTimeframe;
     const trade = await prisma.liveOutcomeCheckpointTrade.create({
       data: {
         shadowExecutionId: execution.id,
@@ -92,7 +97,7 @@ export class LiveOutcomeCheckpointTradingService {
     if (budgetAdjusted) {
       this.logger.info("Dynamic FOK budget adjusted for shallow orderbook.", {
         tradeId: trade.id,
-        originalBudget: config.mlOutcomeRealStakeUsd,
+        originalBudget: stakeForTimeframe,
         adjustedBudget: dynamicBudget,
         maxPrice
       });
@@ -167,7 +172,7 @@ export class LiveOutcomeCheckpointTradingService {
     }
   }
 
-  private async computeDynamicBudget(tokenId: string, maxPrice: number): Promise<number | null> {
+  private async computeDynamicBudget(tokenId: string, maxPrice: number, stakeUsd: number): Promise<number | null> {
     const book = await this.tradingService?.getOrderbook(tokenId);
     if (!book?.asks?.length) return null;
     const sorted = book.asks
@@ -175,7 +180,7 @@ export class LiveOutcomeCheckpointTradingService {
       .filter((l) => Number.isFinite(l.price) && l.price > 0 && l.price <= maxPrice && Number.isFinite(l.size) && l.size > 0)
       .sort((a, b) => a.price - b.price);
     let totalCost = 0;
-    const maxBudget = config.mlOutcomeRealStakeUsd;
+    const maxBudget = stakeUsd;
     for (const { price, size } of sorted) {
       const feePerShare = TAKER_FEE_RATE * price * (1 - price);
       const costPerShare = price + feePerShare;
@@ -217,6 +222,21 @@ export class LiveOutcomeCheckpointTradingService {
       return {
         allowed: false,
         reason: `DAILY_STOP_LOSS_REACHED:${dailyProfit.toFixed(4)}`
+      };
+    }
+
+    const DOWN_MIN_CONFIDENCE_5M = 0.70;
+    const DOWN_MIN_CONFIDENCE_15M = 0.90;
+    const downThreshold = execution.timeframe === "15m"
+      ? DOWN_MIN_CONFIDENCE_15M
+      : DOWN_MIN_CONFIDENCE_5M;
+    if (
+      execution.predictedOutcome === "DOWN" &&
+      Number(execution.modelProbability) < downThreshold
+    ) {
+      return {
+        allowed: false,
+        reason: `DOWN_CONFIDENCE_TOO_LOW:${execution.timeframe}:${(Number(execution.modelProbability) * 100).toFixed(1)}% < ${(downThreshold * 100).toFixed(0)}%`
       };
     }
 

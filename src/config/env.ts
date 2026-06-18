@@ -45,7 +45,9 @@ export interface AppConfig {
   enableMlOutcomeRealTrading: boolean;
   mlOutcomeRealAssets: CryptoAsset[];
   mlOutcomeRealSegments: MlOutcomeRealSegment[];
+  mlOutcomeRealSegmentCheckpoints: Record<string, number[]>;
   mlOutcomeRealStakeUsd: number;
+  mlOutcomeRealStakeUsd15m: number;
   mlOutcomeRealMaxOpenTrades: number;
   mlOutcomeRealDailyStopLossUsd: number;
   mlMinResolvedTrades: number;
@@ -354,6 +356,14 @@ export const config: AppConfig = {
     parseNumber(
       process.env.ML_OUTCOME_REAL_STAKE_USD,
       DEFAULTS.mlOutcomeRealStakeUsd,
+      MIN_VALUES.mlOutcomeRealStakeUsd
+    )
+  ),
+  mlOutcomeRealStakeUsd15m: Math.min(
+    3,
+    parseNumber(
+      process.env.ML_OUTCOME_REAL_STAKE_USD_15M,
+      DEFAULTS.mlOutcomeRealStakeUsd15m,
       MIN_VALUES.mlOutcomeRealStakeUsd
     )
   ),

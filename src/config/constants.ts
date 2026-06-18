@@ -64,6 +64,7 @@ export const DEFAULTS = {
     "XRP:15m:DOWN": [60, 120, 180]
   } as Record<string, number[]>,
   mlOutcomeRealStakeUsd: 3,
+  mlOutcomeRealStakeUsd15m: 1,
   mlOutcomeRealMaxOpenTrades: 2,
   mlOutcomeRealDailyStopLossUsd: 9,
   mlMinResolvedTrades: 1000
