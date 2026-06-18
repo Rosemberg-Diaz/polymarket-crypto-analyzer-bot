@@ -172,6 +172,16 @@ export class OfficialTargetResolverService {
       const points = await this.fetchRtdsChainlinkPricesWithRetry(symbol);
       const firstTick = findFirstTickAfterBoundary(points, windowStart.getTime());
 
+      // Debug logging for price comparison
+      this.logger?.info("POLYMARKET_RTDS_CHAINLINK response", {
+        slug: market.slug,
+        symbol,
+        windowStart: windowStart.toISOString(),
+        pointsCount: points.length,
+        firstTick: firstTick ? { timestamp: firstTick.timestamp, value: firstTick.value } : null,
+        allPoints: points.slice(0, 5).map(p => ({ timestamp: p.timestamp, value: p.value }))
+      });
+
       if (!firstTick || firstTick.timestamp - windowStart.getTime() > RTDS_TARGET_MAX_DISTANCE_MS) {
         return unresolved("RTDS did not provide a Chainlink price close enough to window start.");
       }
@@ -356,6 +366,16 @@ export class OfficialTargetResolverService {
       const text = await this.fetchText(url, "application/json");
       const parsed = JSON.parse(text) as unknown;
       const targetPrice = extractCryptoPriceApiOpenPrice(parsed);
+
+      // Debug logging for price comparison
+      this.logger?.info("POLYMARKET_CRYPTO_PRICE_API response", {
+        slug: market.slug,
+        symbol,
+        windowStart: windowStart.toISOString(),
+        variant,
+        targetPrice,
+        fullResponse: text.slice(0, 500)
+      });
 
       if (targetPrice !== null) {
         return {

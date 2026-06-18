@@ -6,7 +6,7 @@ import { parseRtdsChainlinkPoints } from "./official-target-resolver.service";
 export interface CryptoSpotPrice {
   assetSymbol: CryptoAsset;
   priceUsd: number | null;
-  source: "POLYMARKET_CHAINLINK" | "COINBASE" | "COINGECKO" | "UNSUPPORTED" | "ERROR";
+  source: "POLYMARKET_CHAINLINK" | "POLYMARKET_CRYPTO_PRICE_API" | "COINBASE" | "COINGECKO" | "UNSUPPORTED" | "ERROR";
   fetchedAt: Date;
 }
 
@@ -354,6 +354,103 @@ export class CryptoPriceService {
     };
   }
 
+  async getPolymarketCryptoPrice(
+    assetSymbol: CryptoAsset,
+    timeframe: string,
+    endDate: Date
+  ): Promise<CryptoSpotPrice> {
+    const symbol = assetSymbol === "OTHER" ? null : assetSymbol;
+    const variant = getCryptoPriceVariant(timeframe);
+    const windowStart = inferWindowStartFromEnd(endDate, timeframe);
+
+    if (!symbol || !windowStart || !variant) {
+      this.logger?.warn("Cannot fetch Polymarket crypto price: missing parameters.", {
+        assetSymbol,
+        timeframe,
+        endDate: endDate.toISOString()
+      });
+      return {
+        assetSymbol,
+        priceUsd: null,
+        source: "ERROR",
+        fetchedAt: new Date()
+      };
+    }
+
+    const params = new URLSearchParams({
+      symbol,
+      eventStartTime: windowStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+      variant,
+      endDate: endDate.toISOString().replace(/\.\d{3}Z$/, "Z")
+    });
+    const url = `https://polymarket.com/api/crypto/crypto-price?${params.toString()}`;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+      const response = await fetch(url, {
+        method: "GET",
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          Referer: "https://polymarket.com/",
+          "User-Agent": "Mozilla/5.0 PolymarketCryptoAnalyzerBot/0.1"
+        }
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        this.logger?.warn("Polymarket crypto-price API returned non-OK response.", {
+          assetSymbol,
+          status: response.status
+        });
+        return {
+          assetSymbol,
+          priceUsd: null,
+          source: "ERROR",
+          fetchedAt: new Date()
+        };
+      }
+
+      const text = await response.text();
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const closePrice = toPositiveNumber(parsed.closePrice);
+
+      this.logger?.info("POLYMARKET_CRYPTO_PRICE_API real-time price", {
+        assetSymbol,
+        symbol,
+        closePrice,
+        openPrice: parsed.openPrice,
+        completed: parsed.completed,
+        fullResponse: text.slice(0, 300)
+      });
+
+      if (closePrice !== null) {
+        return this.cacheAndReturn(assetSymbol, closePrice, "POLYMARKET_CRYPTO_PRICE_API");
+      }
+
+      return {
+        assetSymbol,
+        priceUsd: null,
+        source: "ERROR",
+        fetchedAt: new Date()
+      };
+    } catch (error) {
+      this.logger?.warn("Polymarket crypto-price API request failed.", {
+        assetSymbol,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return {
+        assetSymbol,
+        priceUsd: null,
+        source: "ERROR",
+        fetchedAt: new Date()
+      };
+    }
+  }
+
   private fetchPolymarketChainlinkPrice(assetSymbol: CryptoAsset): Promise<number | null> {
     const symbol = `${assetSymbol.toLowerCase()}/usd`;
 
@@ -529,4 +626,54 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function toPositiveNumber(value: unknown): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const numericValue = Number(String(value).replace(/[$,]/g, ""));
+  return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : null;
+}
+
+function getCryptoPriceVariant(timeframe: string): string | null {
+  if (timeframe === "5m") {
+    return "five";
+  }
+
+  if (timeframe === "15m") {
+    return "fifteen";
+  }
+
+  if (timeframe === "1h") {
+    return "hour";
+  }
+
+  return null;
+}
+
+function getTimeframeMs(timeframe: string): number | null {
+  if (timeframe === "5m") {
+    return 5 * 60 * 1000;
+  }
+
+  if (timeframe === "15m") {
+    return 15 * 60 * 1000;
+  }
+
+  if (timeframe === "1h") {
+    return 60 * 60 * 1000;
+  }
+
+  return null;
+}
+
+function inferWindowStartFromEnd(endDate: Date, timeframe: string): Date | null {
+  const durationMs = getTimeframeMs(timeframe);
+  if (durationMs !== null) {
+    return new Date(endDate.getTime() - durationMs);
+  }
+
+  return null;
 }
