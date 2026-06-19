@@ -7,7 +7,12 @@ export interface CryptoSpotPrice {
   assetSymbol: CryptoAsset;
   priceUsd: number | null;
   source: "POLYMARKET_CHAINLINK" | "POLYMARKET_CRYPTO_PRICE_API" | "COINBASE" | "COINGECKO" | "UNSUPPORTED" | "ERROR";
+  /**
+   * Timestamp of the underlying source observation. For Chainlink this is
+   * the timestamp carried by the RTDS tick, not the time the bot read it.
+   */
   fetchedAt: Date;
+  receivedAt?: Date;
 }
 
 interface CachedPrice {
@@ -24,6 +29,8 @@ const DEFAULT_RETRY_BASE_DELAY_MS = 500;
 const CACHE_TTL_MS = 20_000;
 const PERSISTENT_WS_RECONNECT_MS = 5_000;
 const PERSISTENT_WS_HEARTBEAT_MS = 30_000;
+const PERSISTENT_WS_STALE_DATA_MS = 60_000;
+const PERSISTENT_WS_RESUBSCRIBE_MS = 300_000;
 
 // Persistent WebSocket manager for real-time Polymarket Chainlink prices
 class PersistentPriceWebSocket {
@@ -32,6 +39,9 @@ class PersistentPriceWebSocket {
   private subscribers = new Set<(asset: CryptoAsset, price: CryptoSpotPrice) => void>();
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  private staleDataCheckInterval: NodeJS.Timeout | null = null;
+  private resubscribeInterval: NodeJS.Timeout | null = null;
+  private lastMessageReceivedAt: number = 0;
   private isConnecting = false;
   private logger: LoggerService | null = null;
 
@@ -56,6 +66,14 @@ class PersistentPriceWebSocket {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+    if (this.staleDataCheckInterval) {
+      clearInterval(this.staleDataCheckInterval);
+      this.staleDataCheckInterval = null;
+    }
+    if (this.resubscribeInterval) {
+      clearInterval(this.resubscribeInterval);
+      this.resubscribeInterval = null;
     }
     if (this.ws) {
       this.ws.close();
@@ -83,9 +101,12 @@ class PersistentPriceWebSocket {
 
       this.ws.on("open", () => {
         this.isConnecting = false;
+        this.lastMessageReceivedAt = Date.now();
         this.logger?.info("Persistent Polymarket price WebSocket connected.");
         this.subscribeToAllAssets();
         this.startHeartbeat();
+        this.startStaleDataCheck();
+        this.startResubscribe();
       });
 
       this.ws.on("message", (data) => {
@@ -93,8 +114,10 @@ class PersistentPriceWebSocket {
         if (!text.trim()) return;
 
         try {
+          this.lastMessageReceivedAt = Date.now();
           // Parse all asset prices from the message
           for (const asset of SUPPORTED_CRYPTO_ASSETS) {
+            if (asset === "OTHER") continue; // Skip invalid RTDS symbol
             const symbol = `${asset.toLowerCase()}/usd`;
             const points = parseRtdsChainlinkPoints(text, symbol);
             if (points.length > 0) {
@@ -103,7 +126,8 @@ class PersistentPriceWebSocket {
                 assetSymbol: asset,
                 priceUsd: latest.value,
                 source: "POLYMARKET_CHAINLINK",
-                fetchedAt: new Date()
+                fetchedAt: new Date(latest.timestamp),
+                receivedAt: new Date()
               };
               this.prices.set(asset, price);
               this.notifySubscribers(asset, price);
@@ -125,6 +149,8 @@ class PersistentPriceWebSocket {
       this.ws.on("close", () => {
         this.isConnecting = false;
         this.stopHeartbeat();
+        this.stopStaleDataCheck();
+        this.stopResubscribe();
         this.scheduleReconnect();
       });
     } catch (error) {
@@ -137,19 +163,33 @@ class PersistentPriceWebSocket {
   private subscribeToAllAssets(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
-    const symbols = SUPPORTED_CRYPTO_ASSETS.map(asset => `${asset.toLowerCase()}/usd`);
-    
-    this.ws.send(JSON.stringify({
-      action: "subscribe",
-      subscriptions: symbols.map(symbol => ({
-        topic: "crypto_prices_chainlink",
-        type: "*",
-        filters: JSON.stringify({ symbol })
-      }))
-    }));
+    const symbols = SUPPORTED_CRYPTO_ASSETS
+      .filter(asset => asset !== "OTHER")
+      .map(asset => `${asset.toLowerCase()}/usd`);
+
+    // RTDS reliably streams subsequent updates when each filtered
+    // subscription is sent independently. A grouped subscription can return
+    // the initial snapshot for every asset but continue streaming only one.
+    // Send with small delays to avoid overwhelming the server.
+    let delay = 0;
+    for (const symbol of symbols) {
+      setTimeout(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({
+            action: "subscribe",
+            subscriptions: [{
+              topic: "crypto_prices_chainlink",
+              type: "*",
+              filters: JSON.stringify({ symbol })
+            }]
+          }));
+        }
+      }, delay);
+      delay += 100;
+    }
 
     this.logger?.info("Subscribed to all crypto price feeds.", {
-      assets: SUPPORTED_CRYPTO_ASSETS
+      assets: symbols
     });
   }
 
@@ -166,6 +206,46 @@ class PersistentPriceWebSocket {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+  }
+
+  private startStaleDataCheck(): void {
+    this.stopStaleDataCheck();
+    this.staleDataCheckInterval = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      
+      const timeSinceLastMessage = Date.now() - this.lastMessageReceivedAt;
+      if (timeSinceLastMessage > PERSISTENT_WS_STALE_DATA_MS) {
+        this.logger?.warn("Persistent WebSocket stale data detected. Reconnecting.", {
+          timeSinceLastMessage,
+          threshold: PERSISTENT_WS_STALE_DATA_MS
+        });
+        this.ws.close();
+      }
+    }, 30_000);
+  }
+
+  private stopStaleDataCheck(): void {
+    if (this.staleDataCheckInterval) {
+      clearInterval(this.staleDataCheckInterval);
+      this.staleDataCheckInterval = null;
+    }
+  }
+
+  private startResubscribe(): void {
+    this.stopResubscribe();
+    this.resubscribeInterval = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.logger?.info("Periodic re-subscription to RTDS feeds.");
+        this.subscribeToAllAssets();
+      }
+    }, PERSISTENT_WS_RESUBSCRIBE_MS);
+  }
+
+  private stopResubscribe(): void {
+    if (this.resubscribeInterval) {
+      clearInterval(this.resubscribeInterval);
+      this.resubscribeInterval = null;
     }
   }
 
@@ -239,10 +319,17 @@ export class CryptoPriceService {
     // First, try to get price from persistent WebSocket (real-time Polymarket data)
     const persistentPrice = persistentPriceWs.getPrice(assetSymbol);
     if (persistentPrice && persistentPrice.priceUsd !== null) {
-      // Only use if data is recent (less than 10 seconds old)
-      const ageMs = Date.now() - persistentPrice.fetchedAt.getTime();
+      // Use receivedAt for freshness (local time), fallback to fetchedAt
+      const receiveTime = persistentPrice.receivedAt?.getTime() ?? persistentPrice.fetchedAt.getTime();
+      const ageMs = Date.now() - receiveTime;
       if (ageMs < 10_000) {
-        return this.cacheAndReturn(assetSymbol, persistentPrice.priceUsd, "POLYMARKET_CHAINLINK");
+        return this.cacheAndReturn(
+          assetSymbol,
+          persistentPrice.priceUsd,
+          "POLYMARKET_CHAINLINK",
+          persistentPrice.fetchedAt,
+          persistentPrice.receivedAt
+        );
       }
     }
 
@@ -332,6 +419,21 @@ export class CryptoPriceService {
     }
 
     return this.cacheAndReturn(assetSymbol, null, "ERROR");
+  }
+
+  /**
+   * Reads only the persistent Polymarket Chainlink feed. This method never
+   * opens a connection, waits for a network request, or falls back to another
+   * exchange, so it is safe for the latency-sensitive real-order path.
+   */
+  getFreshPolymarketChainlinkPrice(
+    assetSymbol: CryptoAsset,
+    maxAgeMs = 3_000
+  ): CryptoSpotPrice | null {
+    const price = persistentPriceWs.getPrice(assetSymbol);
+    return isFreshPolymarketChainlinkPrice(price, Date.now(), maxAgeMs)
+      ? price
+      : null;
   }
 
   async getCoinbaseSpotPriceUsd(assetSymbol: CryptoAsset): Promise<CryptoSpotPrice> {
@@ -561,13 +663,16 @@ export class CryptoPriceService {
   private cacheAndReturn(
     assetSymbol: CryptoAsset,
     priceUsd: number | null,
-    source: CryptoSpotPrice["source"]
+    source: CryptoSpotPrice["source"],
+    fetchedAt = new Date(),
+    receivedAt?: Date
   ): CryptoSpotPrice {
     const value: CryptoSpotPrice = {
       assetSymbol,
       priceUsd,
       source,
-      fetchedAt: new Date()
+      fetchedAt,
+      receivedAt
     };
 
     this.cache.set(assetSymbol, {
@@ -588,6 +693,29 @@ export class CryptoPriceService {
 
     return this.retryBaseDelayMs * 2 ** attempt;
   }
+}
+
+export function isFreshPolymarketChainlinkPrice(
+  price: CryptoSpotPrice | null,
+  nowMs: number,
+  maxAgeMs: number
+): price is CryptoSpotPrice {
+  if (
+    !price ||
+    price.source !== "POLYMARKET_CHAINLINK" ||
+    price.priceUsd === null ||
+    !Number.isFinite(price.priceUsd) ||
+    price.priceUsd <= 0 ||
+    !Number.isFinite(maxAgeMs) ||
+    maxAgeMs < 0
+  ) {
+    return false;
+  }
+
+  // Use receivedAt for freshness (local time), fallback to fetchedAt
+  const receiveTime = price.receivedAt?.getTime() ?? price.fetchedAt.getTime();
+  const ageMs = nowMs - receiveTime;
+  return ageMs >= 0 && ageMs <= maxAgeMs;
 }
 
 function extractUsdPrice(raw: unknown, coingeckoId: string): number | null {
