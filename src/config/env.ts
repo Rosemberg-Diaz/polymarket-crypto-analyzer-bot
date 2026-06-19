@@ -15,6 +15,9 @@ export interface AppConfig {
   enableRealTrading: boolean;
   scanIntervalSeconds: number;
   shortExitIntervalSeconds: number;
+  enableShortExitObservation: boolean;
+  enableHigherTimeframeOutcomeObservation: boolean;
+  higherTimeframeObservationIntervalSeconds: number;
   enableShortExitRealTrading: boolean;
   shortExitRealAssets: CryptoAsset[];
   shortExitRealStakeUsd: number;
@@ -46,10 +49,13 @@ export interface AppConfig {
   mlOutcomeRealAssets: CryptoAsset[];
   mlOutcomeRealSegments: MlOutcomeRealSegment[];
   mlOutcomeRealSegmentCheckpoints: Record<string, number[]>;
+  mlOutcomeRealMinConfidenceByRule: Record<string, number>;
   mlOutcomeRealStakeUsd: number;
   mlOutcomeRealStakeUsd15m: number;
   mlOutcomeRealMaxOpenTrades: number;
   mlOutcomeRealDailyStopLossUsd: number;
+  mlOutcomeRealAbsoluteDailyStopLossUsd: number;
+  mlOutcomeRealStopLossBaselineAt: Date | null;
   mlMinResolvedTrades: number;
   polygonPrivateKey: string | null;
   addressWallet: string | null;
@@ -90,6 +96,19 @@ function parseNumber(value: string | undefined, fallback: number, minimum: numbe
   }
 
   return Math.max(parsed, minimum);
+}
+
+function parseOptionalDate(
+  value: string | undefined,
+  fallback: string | null
+): Date | null {
+  const raw = value?.trim() || fallback;
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function parsePriorityAssets(value: string | undefined): CryptoAsset[] {
@@ -272,6 +291,19 @@ export const config: AppConfig = {
     DEFAULTS.shortExitIntervalSeconds,
     MIN_VALUES.shortExitIntervalSeconds
   ),
+  enableShortExitObservation: parseBoolean(
+    process.env.ENABLE_SHORT_EXIT_OBSERVATION,
+    DEFAULTS.enableShortExitObservation
+  ),
+  enableHigherTimeframeOutcomeObservation: parseBoolean(
+    process.env.ENABLE_HIGHER_TIMEFRAME_OUTCOME_OBSERVATION,
+    DEFAULTS.enableHigherTimeframeOutcomeObservation
+  ),
+  higherTimeframeObservationIntervalSeconds: parseNumber(
+    process.env.HIGHER_TIMEFRAME_OBSERVATION_INTERVAL_SECONDS,
+    DEFAULTS.higherTimeframeObservationIntervalSeconds,
+    MIN_VALUES.higherTimeframeObservationIntervalSeconds
+  ),
   enableShortExitRealTrading: parseBoolean(
     process.env.ENABLE_SHORT_EXIT_REAL_TRADING,
     DEFAULTS.enableShortExitRealTrading
@@ -351,6 +383,7 @@ export const config: AppConfig = {
     process.env.ML_OUTCOME_REAL_SEGMENTS
   ),
   mlOutcomeRealSegmentCheckpoints: DEFAULTS.mlOutcomeRealSegmentCheckpoints,
+  mlOutcomeRealMinConfidenceByRule: DEFAULTS.mlOutcomeRealMinConfidenceByRule,
   mlOutcomeRealStakeUsd: Math.min(
     3,
     parseNumber(
@@ -376,6 +409,15 @@ export const config: AppConfig = {
     process.env.ML_OUTCOME_REAL_DAILY_STOP_LOSS_USD,
     DEFAULTS.mlOutcomeRealDailyStopLossUsd,
     MIN_VALUES.mlOutcomeRealDailyStopLossUsd
+  ),
+  mlOutcomeRealAbsoluteDailyStopLossUsd: parseNumber(
+    process.env.ML_OUTCOME_REAL_ABSOLUTE_DAILY_STOP_LOSS_USD,
+    DEFAULTS.mlOutcomeRealAbsoluteDailyStopLossUsd,
+    MIN_VALUES.mlOutcomeRealAbsoluteDailyStopLossUsd
+  ),
+  mlOutcomeRealStopLossBaselineAt: parseOptionalDate(
+    process.env.ML_OUTCOME_REAL_STOP_LOSS_BASELINE_AT,
+    DEFAULTS.mlOutcomeRealStopLossBaselineAt
   ),
   mlMinResolvedTrades: parseNumber(
     process.env.ML_MIN_RESOLVED_TRADES,

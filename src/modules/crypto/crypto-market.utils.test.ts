@@ -31,4 +31,13 @@ describe("CryptoMarketUtils", () => {
   it("detects timeframe 15m", () => {
     expect(inferTimeframe("SOL Up or Down in 15 minutes?", "sol-15m", null)).toBe("15m");
   });
+
+  it("detects timeframe 4h before the generic hour pattern", () => {
+    expect(
+      inferTimeframe(
+        "Bitcoin Up or Down - June 18, 4:00PM-8:00PM ET",
+        "btc-updown-4h-1781812800"
+      )
+    ).toBe("4h");
+  });
 });

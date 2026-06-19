@@ -692,6 +692,10 @@ function getCryptoPriceVariant(timeframe: string): string | null {
     return "hour";
   }
 
+  if (timeframe === "4h") {
+    return "four";
+  }
+
   return null;
 }
 
@@ -706,6 +710,10 @@ function getTimeframeMs(timeframe: string): number | null {
 
   if (timeframe === "1h") {
     return 60 * 60 * 1000;
+  }
+
+  if (timeframe === "4h") {
+    return 4 * 60 * 60 * 1000;
   }
 
   return null;

@@ -12,6 +12,7 @@ const CHECKPOINTS_BY_TIMEFRAME = {
 const OPEN_STATUSES = ["ENTRY_ATTEMPTING", "OPEN"];
 const PRICE_EPSILON = 0.000001;
 const TAKER_FEE_RATE = 0.07;
+const MIN_FOK_BUDGET_USD = 1.5;
 
 function getStakeForTimeframe(timeframe: string): number {
   return timeframe === "15m" ? config.mlOutcomeRealStakeUsd15m : config.mlOutcomeRealStakeUsd;
@@ -57,7 +58,7 @@ export class LiveOutcomeCheckpointTradingService {
       return;
     }
 
-      const maxPrice = Number(execution.worstFillPrice);
+    const maxPrice = Number(execution.worstFillPrice);
     const stakeForTimeframe = getStakeForTimeframe(execution.timeframe);
     const dynamicBudget = await this.computeDynamicBudget(execution.tokenId, maxPrice, stakeForTimeframe);
     if (dynamicBudget === null) {
@@ -68,7 +69,7 @@ export class LiveOutcomeCheckpointTradingService {
       });
       return;
     }
-    if (dynamicBudget < 1.50) {
+    if (dynamicBudget < MIN_FOK_BUDGET_USD) {
       this.logger.info("Live outcome checkpoint skipped — insufficient depth for minimum FOK.", {
         executionId: execution.id,
         assetSymbol: execution.assetSymbol,
@@ -175,24 +176,7 @@ export class LiveOutcomeCheckpointTradingService {
   private async computeDynamicBudget(tokenId: string, maxPrice: number, stakeUsd: number): Promise<number | null> {
     const book = await this.tradingService?.getOrderbook(tokenId);
     if (!book?.asks?.length) return null;
-    const sorted = book.asks
-      .map((l) => ({ price: Number(l.price), size: Number(l.size) }))
-      .filter((l) => Number.isFinite(l.price) && l.price > 0 && l.price <= maxPrice + 0.05 && Number.isFinite(l.size) && l.size > 0)
-      .sort((a, b) => a.price - b.price);
-    let totalCost = 0;
-    const maxBudget = stakeUsd;
-    for (const { price, size } of sorted) {
-      const feePerShare = TAKER_FEE_RATE * price * (1 - price);
-      const costPerShare = price + feePerShare;
-      const levelCost = size * costPerShare;
-      const remaining = maxBudget - totalCost;
-      if (levelCost >= remaining) {
-        totalCost = maxBudget;
-        break;
-      }
-      totalCost += levelCost;
-    }
-    return Math.min(maxBudget, Math.round(totalCost * 100) / 100);
+    return calculateDynamicFokBudget(book.asks, maxPrice, stakeUsd);
   }
 
   async evaluateGate(
@@ -207,56 +191,105 @@ export class LiveOutcomeCheckpointTradingService {
       return { allowed: false, reason: "LIVE_OUTCOME_PILOT_DISABLED" };
     }
 
-    const openTrades = await prisma.liveOutcomeCheckpointTrade.count({
-      where: { status: { in: OPEN_STATUSES } }
+    const openTrades = await prisma.liveOutcomeCheckpointTrade.findMany({
+      where: { status: { in: OPEN_STATUSES } },
+      select: { budget: true }
     });
-    if (openTrades >= config.mlOutcomeRealMaxOpenTrades) {
+    if (openTrades.length >= config.mlOutcomeRealMaxOpenTrades) {
       return {
         allowed: false,
-        reason: `MAX_OPEN_TRADES_REACHED:${openTrades}`
+        reason: `MAX_OPEN_TRADES_REACHED:${openTrades.length}`
       };
     }
 
-    const dailyProfit = await getTodayPilotProfit();
-    if (dailyProfit <= -config.mlOutcomeRealDailyStopLossUsd) {
+    const [dailyProfit, operationalProfit] = await Promise.all([
+      getPilotProfitSince(getBogotaDayStartUtc()),
+      getPilotProfitSince(
+        config.mlOutcomeRealStopLossBaselineAt ?? getBogotaDayStartUtc()
+      )
+    ]);
+    const stakeForTimeframe = getStakeForTimeframe(execution.timeframe);
+    const openRisk = openTrades.reduce(
+      (sum, trade) => sum + Number(trade.budget),
+      0
+    );
+    if (wouldExceedDailyStopLoss(
+      operationalProfit,
+      openRisk,
+      stakeForTimeframe,
+      config.mlOutcomeRealDailyStopLossUsd
+    )) {
       return {
         allowed: false,
-        reason: `DAILY_STOP_LOSS_REACHED:${dailyProfit.toFixed(4)}`
+        reason:
+          `OPERATIONAL_STOP_LOSS_WOULD_BE_EXCEEDED:` +
+          `${operationalProfit.toFixed(4)}-${openRisk.toFixed(2)}-` +
+          `${stakeForTimeframe.toFixed(2)}`
+      };
+    }
+    if (wouldExceedDailyStopLoss(
+      dailyProfit,
+      openRisk,
+      stakeForTimeframe,
+      config.mlOutcomeRealAbsoluteDailyStopLossUsd
+    )) {
+      return {
+        allowed: false,
+        reason:
+          `ABSOLUTE_DAILY_STOP_LOSS_WOULD_BE_EXCEEDED:` +
+          `${dailyProfit.toFixed(4)}-${openRisk.toFixed(2)}-` +
+          `${stakeForTimeframe.toFixed(2)}`
       };
     }
 
-    const DOWN_MIN_CONFIDENCE_5M = 0.70;
-    const DOWN_MIN_CONFIDENCE_15M = 0.80;
-    const downThreshold = execution.timeframe === "15m"
-      ? DOWN_MIN_CONFIDENCE_15M
-      : DOWN_MIN_CONFIDENCE_5M;
-    if (
-      execution.predictedOutcome === "DOWN" &&
-      Number(execution.modelProbability) < downThreshold
-    ) {
+    const confidenceThreshold = getMlOutcomeRealMinConfidence(execution);
+    if (Number(execution.modelProbability) < confidenceThreshold) {
       return {
         allowed: false,
-        reason: `DOWN_CONFIDENCE_TOO_LOW:${execution.timeframe}:${(Number(execution.modelProbability) * 100).toFixed(1)}% < ${(downThreshold * 100).toFixed(0)}%`
-      };
-    }
-
-    const UP_MIN_CONFIDENCE_5M = 0.0;
-    const UP_MIN_CONFIDENCE_15M = 0.80;
-    const upThreshold = execution.timeframe === "15m"
-      ? UP_MIN_CONFIDENCE_15M
-      : UP_MIN_CONFIDENCE_5M;
-    if (
-      execution.predictedOutcome === "UP" &&
-      Number(execution.modelProbability) < upThreshold
-    ) {
-      return {
-        allowed: false,
-        reason: `UP_CONFIDENCE_TOO_LOW:${execution.timeframe}:${(Number(execution.modelProbability) * 100).toFixed(1)}% < ${(upThreshold * 100).toFixed(0)}%`
+        reason:
+          `${execution.predictedOutcome}_CONFIDENCE_TOO_LOW:` +
+          `${execution.assetSymbol}:${execution.timeframe}:` +
+          `${execution.checkpointSeconds}:` +
+          `${(Number(execution.modelProbability) * 100).toFixed(1)}% < ` +
+          `${(confidenceThreshold * 100).toFixed(0)}%`
       };
     }
 
     return { allowed: true };
   }
+}
+
+export function calculateDynamicFokBudget(
+  asks: Array<{ price: string; size: string }>,
+  maxPrice: number,
+  stakeUsd: number
+): number {
+  const sorted = asks
+    .map((level) => ({ price: Number(level.price), size: Number(level.size) }))
+    .filter(
+      (level) =>
+        Number.isFinite(level.price) &&
+        level.price > 0 &&
+        level.price <= maxPrice + PRICE_EPSILON &&
+        Number.isFinite(level.size) &&
+        level.size > 0
+    )
+    .sort((a, b) => a.price - b.price);
+
+  let totalCost = 0;
+  for (const { price, size } of sorted) {
+    const feePerShare = TAKER_FEE_RATE * price * (1 - price);
+    const levelCost = size * (price + feePerShare);
+    const remaining = stakeUsd - totalCost;
+    if (levelCost >= remaining) {
+      totalCost = stakeUsd;
+      break;
+    }
+    totalCost += levelCost;
+  }
+
+  const boundedCost = Math.min(stakeUsd, totalCost);
+  return Math.floor((boundedCost + Number.EPSILON) * 100) / 100;
 }
 
 export function isLiveOutcomeCheckpointEligible(
@@ -314,6 +347,37 @@ export function isLiveOutcomeCheckpointEligible(
   return { allowed: true };
 }
 
+export function wouldExceedDailyStopLoss(
+  realizedProfit: number,
+  openRisk: number,
+  proposedStake: number,
+  stopLossUsd: number
+): boolean {
+  return realizedProfit - openRisk - proposedStake < -stopLossUsd;
+}
+
+export function getMlOutcomeRealMinConfidence(
+  execution: Pick<
+    MlOutcomeShadowExecution,
+    "assetSymbol" | "timeframe" | "predictedOutcome" |
+    "checkpointSeconds"
+  >
+): number {
+  const rule =
+    `${execution.assetSymbol}:${execution.timeframe}:` +
+    `${execution.predictedOutcome}:${execution.checkpointSeconds}`;
+  const override = config.mlOutcomeRealMinConfidenceByRule[rule];
+  if (override !== undefined) {
+    return override;
+  }
+
+  if (execution.predictedOutcome === "DOWN") {
+    return execution.timeframe === "15m" ? 0.80 : 0.70;
+  }
+
+  return execution.timeframe === "15m" ? 0.80 : 0;
+}
+
 function isAllowedRealSegment(execution: MlOutcomeShadowExecution): boolean {
   const asset = execution.assetSymbol as CryptoAsset;
   const timeframe = execution.timeframe === "15m" ? "15m" :
@@ -350,8 +414,7 @@ function isAllowedCheckpointForTimeframe(
     .includes(execution.checkpointSeconds);
 }
 
-async function getTodayPilotProfit(): Promise<number> {
-  const start = getBogotaDayStartUtc();
+async function getPilotProfitSince(start: Date): Promise<number> {
   const rows = await prisma.liveOutcomeCheckpointTrade.findMany({
     where: {
       createdAt: { gte: start },

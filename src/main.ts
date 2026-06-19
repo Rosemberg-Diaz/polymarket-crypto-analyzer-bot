@@ -5,6 +5,7 @@ import { HealthCheckService } from "./modules/health/health-check.service";
 import { CryptoMarketScannerJob } from "./modules/jobs/crypto-market-scanner.job";
 import { DailyMaintenanceJob } from "./modules/jobs/daily-maintenance.job";
 import { DailyExitObserverJob } from "./modules/jobs/daily-exit-observer.job";
+import { HigherTimeframeOutcomeObservationJob } from "./modules/jobs/higher-timeframe-outcome-observation.job";
 import { OutcomeCheckpointJob } from "./modules/jobs/outcome-checkpoint.job";
 import { ResolveObservationEvaluationsJob } from "./modules/jobs/resolve-observation-evaluations.job";
 import { ResolveMlOutcomeShadowExecutionsJob } from "./modules/jobs/resolve-ml-outcome-shadow-executions.job";
@@ -35,16 +36,20 @@ async function bootstrap(): Promise<void> {
   const shortTermExitObserverJob = new ShortTermExitObserverJob(logger);
   const dailyExitObserverJob = new DailyExitObserverJob(logger);
   const outcomeCheckpointJob = new OutcomeCheckpointJob(logger);
+  const higherTimeframeOutcomeObservationJob =
+    new HigherTimeframeOutcomeObservationJob(logger);
   const healthCheckService = new HealthCheckService();
   let scanTimer: NodeJS.Timeout | null = null;
   let shortExitTimer: NodeJS.Timeout | null = null;
   let maintenanceTimer: NodeJS.Timeout | null = null;
   let outcomeCheckpointTimer: NodeJS.Timeout | null = null;
+  let higherTimeframeObservationTimer: NodeJS.Timeout | null = null;
   let isShuttingDown = false;
   let isScanRunning = false;
   let isShortExitRunning = false;
   let isMaintenanceRunning = false;
   let isOutcomeCheckpointRunning = false;
+  let isHigherTimeframeObservationRunning = false;
 
   async function shutdown(reason: string): Promise<void> {
     if (isShuttingDown) {
@@ -70,6 +75,11 @@ async function bootstrap(): Promise<void> {
     if (outcomeCheckpointTimer) {
       clearTimeout(outcomeCheckpointTimer);
       outcomeCheckpointTimer = null;
+    }
+
+    if (higherTimeframeObservationTimer) {
+      clearTimeout(higherTimeframeObservationTimer);
+      higherTimeframeObservationTimer = null;
     }
 
     try {
@@ -98,7 +108,9 @@ async function bootstrap(): Promise<void> {
         await resolveObservationEvaluationsJob.runOnce();
         await resolveMlOutcomeShadowExecutionsJob.runOnce();
         await resolveLiveOutcomeCheckpointTradesJob.runOnce();
-        await resolveRealisticShortExitExecutionsJob.runOnce();
+        if (config.enableShortExitObservation) {
+          await resolveRealisticShortExitExecutionsJob.runOnce();
+        }
         const health = await healthCheckService.getStatus();
         logger.info("Health check", health);
       } catch (error) {
@@ -200,6 +212,38 @@ async function bootstrap(): Promise<void> {
     }
   }
 
+  async function runHigherTimeframeObservationLoop(): Promise<void> {
+    if (isShuttingDown || !config.enableHigherTimeframeOutcomeObservation) {
+      return;
+    }
+
+    if (isMaintenanceRunning) {
+      logger.info(
+        "Higher-timeframe observation paused while database maintenance is running."
+      );
+    } else if (isHigherTimeframeObservationRunning) {
+      logger.warn(
+        "Previous higher-timeframe observation tick still running. Skipping this tick."
+      );
+    } else {
+      isHigherTimeframeObservationRunning = true;
+      try {
+        await higherTimeframeOutcomeObservationJob.runOnce();
+      } catch (error) {
+        logger.error("Higher-timeframe outcome observation job failed.", error);
+      } finally {
+        isHigherTimeframeObservationRunning = false;
+      }
+    }
+
+    if (!isShuttingDown) {
+      higherTimeframeObservationTimer = setTimeout(
+        runHigherTimeframeObservationLoop,
+        config.higherTimeframeObservationIntervalSeconds * 1_000
+      );
+    }
+  }
+
   process.once("SIGINT", () => {
     void shutdown("SIGINT").finally(() => {
       process.exit(0);
@@ -216,11 +260,13 @@ async function bootstrap(): Promise<void> {
   logger.info(`Modo actual: ${config.appMode}`);
   logger.info(`Base de datos usada: ${config.databaseUrl}`);
   logger.info(`Intervalo de escaneo: ${config.scanIntervalSeconds} segundos`);
-  logger.info(
-    `Intervalo de observacion compra/venta CLOB: ${config.shortExitIntervalSeconds} segundos`
-  );
+  logger.info("Captura de compra/venta CLOB", {
+    enabled: config.enableShortExitObservation,
+    intervalSeconds: config.shortExitIntervalSeconds,
+    historicalDataPreserved: true
+  });
   logger.info("Compra/venta diaria multi-ciclo", {
-    mode: "OBSERVATION_ONLY",
+    mode: config.enableShortExitObservation ? "OBSERVATION_ONLY" : "PAUSED",
     strategies: [
       "DAILY_MULTI_CYCLE_NO_STOP_V1",
       "DAILY_TREND_FILTERED_V2"
@@ -236,7 +282,23 @@ async function bootstrap(): Promise<void> {
     job: "LIGHTWEIGHT_CURRENT_MARKETS_ONLY",
     mode: "OBSERVATION_ONLY"
   });
+  logger.info("Observacion UP/DOWN de timeframes superiores", {
+    enabled: config.enableHigherTimeframeOutcomeObservation,
+    timeframes: ["1h", "4h"],
+    checkpointsSeconds: {
+      "1h": [720, 480, 240, 120],
+      "4h": [2880, 1920, 960, 480]
+    },
+    predictionModel: "HTF_DIRECTION_HEURISTIC_V1",
+    futureMlModels: [
+      "OUTCOME_UP_DOWN_LOGREG_V1_1H",
+      "OUTCOME_UP_DOWN_LOGREG_V1_4H"
+    ],
+    mode: "OBSERVATION_ONLY",
+    realTrading: false
+  });
   logger.info("Variantes filtradas de compra/venta", {
+    enabled: config.enableShortExitObservation,
     fiveMinuteStrategy: "EARLY_WINDOW_XRP_SOL_5M_V1",
     fiveMinuteAssets: ["XRP", "SOL"],
     fiveMinuteEntryWindowSecondsToClose: [280, 300],
@@ -249,9 +311,10 @@ async function bootstrap(): Promise<void> {
     maxSpread: 0.02,
     takeProfitNetRoi: 0.02,
     maxEntriesPerMarket: 1,
-    mode: "OBSERVATION_ONLY"
+    mode: config.enableShortExitObservation ? "OBSERVATION_ONLY" : "PAUSED"
   });
   logger.info("Observacion de microestructura", {
+    enabled: config.enableShortExitObservation,
     strategy: "ORDER_FLOW_CONFIRMATION_V1",
     timeframes: ["5m", "15m"],
     sampleIntervalSeconds: config.shortExitIntervalSeconds,
@@ -263,7 +326,7 @@ async function bootstrap(): Promise<void> {
       "depth_imbalance_l5",
       "microprice"
     ],
-    mode: "OBSERVATION_ONLY",
+    mode: config.enableShortExitObservation ? "OBSERVATION_ONLY" : "PAUSED",
     realTrading: false
   });
   logger.info("Compra/venta real de corto plazo", {
@@ -307,11 +370,18 @@ async function bootstrap(): Promise<void> {
   logger.info("ML UP/DOWN live outcome checkpoint pilot", {
     enabled: config.enableMlOutcomeRealTrading,
     assets: config.mlOutcomeRealAssets,
-    timeframe: "5m",
-    checkpointSeconds: 30,
-    stakeUsd: config.mlOutcomeRealStakeUsd,
+    timeframes: ["5m", "15m"],
+    checkpointSeconds: [180, 120, 60, 30],
+    stakeUsd: {
+      "5m": config.mlOutcomeRealStakeUsd,
+      "15m": config.mlOutcomeRealStakeUsd15m
+    },
     maxOpenTrades: config.mlOutcomeRealMaxOpenTrades,
-    dailyStopLossUsd: config.mlOutcomeRealDailyStopLossUsd,
+    operationalStopLossUsd: config.mlOutcomeRealDailyStopLossUsd,
+    operationalStopLossBaselineAt:
+      config.mlOutcomeRealStopLossBaselineAt?.toISOString() ?? null,
+    absoluteDailyStopLossUsd:
+      config.mlOutcomeRealAbsoluteDailyStopLossUsd,
     orderType: "FOK",
     requiresShadowExecutable: true,
     maxSlippage: config.mlOutcomeExecutionMaxSlippage
@@ -322,8 +392,23 @@ async function bootstrap(): Promise<void> {
   await dailyMaintenanceJob.runManual();
   maintenanceTimer = setTimeout(runMaintenanceLoop, config.backupIntervalHours * 60 * 60 * 1000);
   void runScanLoop();
-  void runShortExitLoop();
+  if (config.enableShortExitObservation) {
+    void runShortExitLoop();
+  } else {
+    logger.info("Buy/sell observation jobs are paused.", {
+      pausedJobs: [
+        "SHORT_TERM_EXIT_OBSERVER",
+        "DAILY_EXIT_OBSERVER",
+        "REALISTIC_SHORT_EXIT_RESOLVER",
+        "ORDER_FLOW_CONFIRMATION"
+      ],
+      upDownJobsRemainActive: true
+    });
+  }
   void runOutcomeCheckpointLoop();
+  if (config.enableHigherTimeframeOutcomeObservation) {
+    void runHigherTimeframeObservationLoop();
+  }
 }
 
 bootstrap().catch(async (error: unknown) => {

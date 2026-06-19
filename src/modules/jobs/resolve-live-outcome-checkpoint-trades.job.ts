@@ -95,10 +95,17 @@ export class ResolveLiveOutcomeCheckpointTradesJob {
     }
   }
 
-  private async logPriceDiscrepancy(trade: { id: string; assetSymbol: string; timeframe: string; marketId: string; predictedOutcome: string }): Promise<void> {
+  private async logPriceDiscrepancy(trade: {
+    id: string;
+    predictionId: string;
+    assetSymbol: string;
+    timeframe: string;
+    marketId: string;
+    predictedOutcome: string;
+  }): Promise<void> {
     try {
       const prediction = await prisma.botPrediction.findUnique({
-        where: { id: trade.id },
+        where: { id: trade.predictionId },
         select: { snapshotId: true }
       });
       if (!prediction) return;

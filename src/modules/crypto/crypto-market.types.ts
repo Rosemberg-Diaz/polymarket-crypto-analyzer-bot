@@ -1,6 +1,6 @@
 import { CryptoAsset, CryptoMarketType } from "../../config/assets";
 
-export type CryptoTimeframe = "5m" | "15m" | "1h" | "1d" | "unknown";
+export type CryptoTimeframe = "5m" | "15m" | "1h" | "4h" | "1d" | "unknown";
 
 export type NormalizedOutcomeName = "UP" | "DOWN" | "YES" | "NO" | "OTHER";
 export type TargetPriceSource =
@@ -9,6 +9,7 @@ export type TargetPriceSource =
   | "POLYMARKET_RTDS_CHAINLINK"
   | "POLYMARKET_UI_PAYLOAD"
   | "POLYMARKET_UMA_ANCILLARY"
+  | "BINANCE_1H_CANDLE_OPEN"
   | "LOCAL_SPOT_APPROXIMATION"
   | "PREVIOUS_SNAPSHOT"
   | "UNKNOWN";

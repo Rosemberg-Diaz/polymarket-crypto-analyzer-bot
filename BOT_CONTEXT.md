@@ -172,27 +172,32 @@ mlOutcomeRealDailyStopLossUsd = 9
 Defined in `src/config/constants.ts` as defaults and overrideable with
 `ML_OUTCOME_REAL_SEGMENTS`.
 
-Currently active:
+Currently active after the June 18 real-pilot review:
+
+```text
+ETH:5m:UP
+SOL:5m:UP
+SOL:5m:DOWN
+XRP:5m:DOWN
+BTC:15m:DOWN (120s, 180s)
+ETH:15m:DOWN (60s, 120s)
+ETH:15m:UP (60s)
+```
+
+Returned to shadow observation:
 
 ```text
 BTC:5m:UP
-ETH:5m:UP
 ETH:5m:DOWN
-SOL:5m:UP
-XRP:5m:DOWN
+ETH:15m:DOWN at 180s
 SOL:15m:UP
-BTC:15m:DOWN
-ETH:15m:DOWN
-```
-
-Recently removed from real trading:
-
-```text
 XRP:15m:DOWN
 ```
 
-Reason: historical 15m shadow performance for `XRP:15m:DOWN` was negative and
-the first real filled trade in that segment lost.
+Reason: realized PnL is negative for BTC 5m UP and ETH 5m DOWN. Within 15m,
+the checkpoint-level review kept only checkpoints with positive realized PnL
+and removed the negative checkpoint rules instead of disabling the entire
+timeframe.
 
 ### Active Checkpoints
 
@@ -221,9 +226,27 @@ The service also requires:
 - slippage within `ML_OUTCOME_EXECUTION_MAX_SLIPPAGE`
 - live trading flags enabled
 - open live trades below the cap
-- daily stop loss not reached
+- projected worst-case loss since `ML_OUTCOME_REAL_STOP_LOSS_BASELINE_AT`
+  does not cross the operational stop
+- projected worst-case loss for the full Bogota calendar day does not cross
+  `ML_OUTCOME_REAL_ABSOLUTE_DAILY_STOP_LOSS_USD`
+- model confidence above the default timeframe/outcome threshold or the
+  stricter rule-specific threshold in `mlOutcomeRealMinConfidenceByRule`
+
+The current rule-specific review enables `BTC:15m:DOWN` at 60 seconds and
+`SOL:15m:UP` at 180 seconds. It also requires higher confidence for
+`SOL:5m:UP:30`, `BTC:15m:DOWN:120`, and `ETH:15m:DOWN:60`.
 
 ## What Is Not Active for Real Trading
+
+### Higher-Timeframe UP/DOWN Observation
+
+The isolated strategy `HIGHER_TIMEFRAME_OUTCOME_CHECKPOINT_V1` observes 1h and
+4h markets without creating real orders. It stores checkpoints at 12/8/4/2
+minutes for 1h and 48/32/16/8 minutes for 4h, uses official Polymarket
+resolution, and records executable shadow results. Its initial versioned
+heuristic exists only to collect labeled data for future independent 1h and 4h
+ML models.
 
 ### Short Exit / Buy-Sell Strategy
 
@@ -235,6 +258,8 @@ Tables/services:
 
 Current status:
 
+- Observation capture is paused with `ENABLE_SHORT_EXIT_OBSERVATION=false`.
+- Historical rows and implementation remain preserved for future analysis.
 - Real trading disabled by `ENABLE_SHORT_EXIT_REAL_TRADING=false`.
 - It remains useful as observation/training data.
 - Do not mix its observation profit with real-money outcome checkpoint profit.

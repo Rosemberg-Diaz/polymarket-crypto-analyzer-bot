@@ -23,8 +23,17 @@ const DAILY_DISCOVERY_CACHE_TTL_MS = 60 * 1000;
 // AVAX remains supported by the domain model, but Polymarket does not currently
 // publish the recurring 5m market, so avoid probing nonexistent event slugs.
 const RECURRING_UP_DOWN_ASSETS = ["btc", "eth", "sol", "xrp", "doge", "bnb"] as const;
+const HOURLY_UP_DOWN_ASSETS = [
+  "bitcoin",
+  "ethereum",
+  "solana",
+  "xrp",
+  "dogecoin",
+  "bnb"
+] as const;
 const RECURRING_UP_DOWN_5M_TIMEFRAME_SECONDS = 5 * 60;
 const RECURRING_UP_DOWN_15M_TIMEFRAME_SECONDS = 15 * 60;
+const RECURRING_UP_DOWN_4H_TIMEFRAME_SECONDS = 4 * 60 * 60;
 const DAILY_UP_DOWN_ASSETS = [
   "bitcoin",
   "ethereum",
@@ -114,6 +123,53 @@ export class PolymarketService {
         (market) =>
           market.marketType === "UP_DOWN_SHORT_TERM" &&
           market.timeframe === "15m"
+      );
+    return sortPolymarketCryptoMarkets(cryptoMarkets);
+  }
+
+  async getFastCryptoUpDown1hMarkets(): Promise<NormalizedCryptoMarket[]> {
+    const events = await Promise.all(
+      getHourlyEventSlugs(new Date()).map((slug) =>
+        this.client.getEventBySlug(slug)
+      )
+    );
+    return sortPolymarketCryptoMarkets(
+      extractMarketsFromEvents(
+        events.filter((event): event is PolymarketEvent => event !== null)
+      )
+        .map((market) => mapPolymarketMarketToCryptoMarket(market))
+        .filter((market): market is NormalizedCryptoMarket => market !== null)
+        .filter(
+          (market) =>
+            market.marketType === "UP_DOWN_SHORT_TERM" &&
+            market.timeframe === "1h"
+        )
+    );
+  }
+
+  async getFastCryptoUpDown4hMarkets(): Promise<NormalizedCryptoMarket[]> {
+    return this.getFastRecurringCryptoUpDownMarkets(
+      "4h",
+      RECURRING_UP_DOWN_4H_TIMEFRAME_SECONDS
+    );
+  }
+
+  private async getFastRecurringCryptoUpDownMarkets(
+    timeframe: "1h" | "4h",
+    timeframeSeconds: number
+  ): Promise<NormalizedCryptoMarket[]> {
+    const markets = await this.fetchRecurringCryptoUpDownMarkets(
+      timeframe,
+      timeframeSeconds,
+      [0, timeframeSeconds]
+    );
+    const cryptoMarkets = markets
+      .map((market) => mapPolymarketMarketToCryptoMarket(market))
+      .filter((market): market is NormalizedCryptoMarket => market !== null)
+      .filter(
+        (market) =>
+          market.marketType === "UP_DOWN_SHORT_TERM" &&
+          market.timeframe === timeframe
       );
     return sortPolymarketCryptoMarkets(cryptoMarkets);
   }
@@ -291,7 +347,7 @@ export class PolymarketService {
   }
 
   private async fetchRecurringCryptoUpDownMarkets(
-    timeframe: "5m" | "15m",
+    timeframe: "5m" | "15m" | "1h" | "4h",
     timeframeSeconds: number,
     offsetsSeconds: number[]
   ): Promise<PolymarketMarket[]> {
@@ -428,6 +484,35 @@ export class PolymarketService {
       });
     }
   }
+}
+
+export function getHourlyEventSlugs(now: Date): string[] {
+  return HOURLY_UP_DOWN_ASSETS.flatMap((asset) =>
+    [-1, 0, 1, 2].map((offsetHours) => {
+      const instant = new Date(now.getTime() + offsetHours * 60 * 60 * 1_000);
+      const parts = Object.fromEntries(
+        new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/New_York",
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+          hour: "numeric",
+          hour12: true
+        })
+          .formatToParts(instant)
+          .map((part) => [part.type, part.value])
+      );
+      const month = String(parts.month).toLowerCase();
+      const day = String(parts.day);
+      const year = String(parts.year);
+      const hour = String(parts.hour);
+      const dayPeriod = String(parts.dayPeriod).toLowerCase();
+      return (
+        `${asset}-up-or-down-${month}-${day}-${year}-` +
+        `${hour}${dayPeriod}-et`
+      );
+    })
+  );
 }
 
 function getNewYorkDateSlugs(now: Date): string[] {

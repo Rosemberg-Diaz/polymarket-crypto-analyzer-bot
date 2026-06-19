@@ -13,6 +13,7 @@ import { PolymarketTradingService } from "../trading/polymarket-trading.service"
 import { getDueOutcomePredictionCheckpoints } from "./crypto-market-scanner.job";
 
 export const OUTCOME_CHECKPOINT_STRATEGY = "OUTCOME_CHECKPOINT_V1";
+const REAL_ORDER_CHAINLINK_MAX_AGE_MS = 90_000;
 
 export class OutcomeCheckpointJob {
   private readonly client = new PolymarketClient();
@@ -22,6 +23,7 @@ export class OutcomeCheckpointJob {
   private readonly shadowExecutionService: MlOutcomeShadowExecutionService;
   private readonly liveTradingService: LiveOutcomeCheckpointTradingService;
   private readonly tradingService: PolymarketTradingService | null;
+  private readonly staleTickWarnings = new Set<string>();
 
   constructor(private readonly logger: LoggerService) {
     this.outcomeModelService = new OutcomeModelService(logger);
@@ -173,11 +175,6 @@ export class OutcomeCheckpointJob {
       assetSymbol: CryptoAsset;
     }
   ): Promise<void> {
-    const currentAssetPrice = candidate.currentAssetPrice;
-    if (currentAssetPrice <= 0) {
-      return;
-    }
-
     const existing = await prisma.botPrediction.findMany({
       where: {
         marketId: candidate.market.id,
@@ -195,8 +192,6 @@ export class OutcomeCheckpointJob {
       return;
     }
 
-    const predictedOutcome =
-      currentAssetPrice > candidate.targetPrice ? "UP" : "DOWN";
     const upOutcome = candidate.market.outcomes.find((item) =>
       ["UP", "YES"].includes(item.normalizedName)
     );
@@ -217,26 +212,44 @@ export class OutcomeCheckpointJob {
     const downPrice =
       downPriceResponse.price ??
       (downOutcome.currentPrice === null ? null : Number(downOutcome.currentPrice));
+
+    const freshChainlinkPrice =
+      this.cryptoPriceService.getFreshPolymarketChainlinkPrice(
+        candidate.assetSymbol,
+        REAL_ORDER_CHAINLINK_MAX_AGE_MS
+      );
+    if (!freshChainlinkPrice) {
+      const warningKey =
+        `${candidate.market.id}:${candidate.checkpointSeconds}`;
+      if (!this.staleTickWarnings.has(warningKey)) {
+        this.staleTickWarnings.add(warningKey);
+        this.logger.warn("Outcome checkpoint waiting for fresh Chainlink tick.", {
+          marketId: candidate.market.id,
+          slug: candidate.market.slug,
+          assetSymbol: candidate.assetSymbol,
+          checkpointSeconds: candidate.checkpointSeconds,
+          maxAgeMs: REAL_ORDER_CHAINLINK_MAX_AGE_MS
+        });
+      }
+      return;
+    }
+    this.staleTickWarnings.delete(
+      `${candidate.market.id}:${candidate.checkpointSeconds}`
+    );
+
+    const currentAssetPrice = freshChainlinkPrice.priceUsd;
+    if (currentAssetPrice === null || currentAssetPrice <= 0) {
+      return;
+    }
+    const predictedOutcome =
+      currentAssetPrice > candidate.targetPrice ? "UP" : "DOWN";
     const entryPrice = predictedOutcome === "UP" ? upPrice : downPrice;
     if (entryPrice === null || entryPrice <= 0 || entryPrice >= 1) {
       return;
     }
-
     const distanceToTarget = currentAssetPrice - candidate.targetPrice;
     const distanceToTargetPercent =
       distanceToTarget / candidate.targetPrice;
-    const coinbaseSpotPrice = await this.cryptoPriceService.getCoinbaseSpotPriceUsd(
-      candidate.assetSymbol
-    );
-    const coinbaseDistanceToTarget = coinbaseSpotPrice.priceUsd === null
-      ? null
-      : coinbaseSpotPrice.priceUsd - candidate.targetPrice;
-    const coinbaseDistanceToTargetPercent = coinbaseDistanceToTarget === null
-      ? null
-      : coinbaseDistanceToTarget / candidate.targetPrice;
-    const coinbasePredictedOutcome = coinbaseSpotPrice.priceUsd === null
-      ? null
-      : coinbaseSpotPrice.priceUsd > candidate.targetPrice ? "UP" : "DOWN";
     const targetMetadata = readTargetMetadata(
       candidate.market.snapshots[0]?.rawData
     );
@@ -293,12 +306,12 @@ export class OutcomeCheckpointJob {
       targetPriceSource: targetMetadata.source,
       targetPriceTrustedForLearning: targetMetadata.trusted,
       currentAssetPrice,
-      coinbasePriceUsd: coinbaseSpotPrice.priceUsd,
-      coinbasePriceSource: coinbaseSpotPrice.source,
-      coinbasePriceFetchedAt: coinbaseSpotPrice.fetchedAt.toISOString(),
-      coinbaseDistanceToTarget,
-      coinbaseDistanceToTargetPercent,
-      coinbasePredictedOutcome,
+      currentAssetPriceSource: freshChainlinkPrice.source,
+      currentAssetPriceTickAt: freshChainlinkPrice.fetchedAt.toISOString(),
+      currentAssetPriceReceivedAt:
+        freshChainlinkPrice.receivedAt?.toISOString() ?? null,
+      currentAssetPriceAgeMs:
+        Date.now() - freshChainlinkPrice.fetchedAt.getTime(),
       distanceToTarget,
       distanceToTargetPercent,
       secondsToClose: candidate.secondsToClose,
@@ -330,7 +343,11 @@ export class OutcomeCheckpointJob {
           checkpointSeconds: candidate.checkpointSeconds,
           captureJob: "LIGHTWEIGHT_5S",
           targetPriceSource: targetMetadata.source,
-          targetPriceTrustedForLearning: targetMetadata.trusted
+          targetPriceTrustedForLearning: targetMetadata.trusted,
+          currentAssetPriceSource: freshChainlinkPrice.source,
+          currentAssetPriceTickAt: freshChainlinkPrice.fetchedAt.toISOString(),
+          currentAssetPriceReceivedAt:
+            freshChainlinkPrice.receivedAt?.toISOString() ?? null
         })
       }
     });
@@ -415,7 +432,31 @@ export class OutcomeCheckpointJob {
         orderBook: delayedOrderBook
       });
       if (shadowExecution) {
-        await this.liveTradingService.tryOpen(shadowExecution);
+        const preflightPrice =
+          this.cryptoPriceService.getFreshPolymarketChainlinkPrice(
+            candidate.assetSymbol,
+            REAL_ORDER_CHAINLINK_MAX_AGE_MS
+          );
+        const preflightDirection = preflightPrice?.priceUsd === null ||
+          preflightPrice?.priceUsd === undefined
+          ? null
+          : preflightPrice.priceUsd > candidate.targetPrice ? "UP" : "DOWN";
+        if (
+          !preflightPrice ||
+          preflightDirection !== mlScore.predictedOutcome
+        ) {
+          this.logger.warn("Live outcome order skipped by Chainlink preflight.", {
+            executionId: shadowExecution.id,
+            marketId: candidate.market.id,
+            assetSymbol: candidate.assetSymbol,
+            modelOutcome: mlScore.predictedOutcome,
+            preflightDirection,
+            tickAt: preflightPrice?.fetchedAt.toISOString() ?? null,
+            maxAgeMs: REAL_ORDER_CHAINLINK_MAX_AGE_MS
+          });
+        } else {
+          await this.liveTradingService.tryOpen(shadowExecution);
+        }
       }
     }
 
@@ -429,7 +470,9 @@ export class OutcomeCheckpointJob {
       entryPrice,
       mlOutcomePrediction: mlScore?.predictedOutcome,
       mlProbabilityUp: mlScore?.probabilityUp,
-      mlOutcomeEntryPrice
+      mlOutcomeEntryPrice,
+      currentAssetPriceSource: freshChainlinkPrice.source,
+      currentAssetPriceTickAt: freshChainlinkPrice.fetchedAt.toISOString()
     });
   }
 

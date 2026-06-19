@@ -8,6 +8,9 @@ export const DEFAULTS = {
   enableRealTrading: true,
   scanIntervalSeconds: 10,
   shortExitIntervalSeconds: 5,
+  enableShortExitObservation: false,
+  enableHigherTimeframeOutcomeObservation: true,
+  higherTimeframeObservationIntervalSeconds: 30,
   enableShortExitRealTrading: false,
   shortExitRealAssets: ["BTC"],
   shortExitRealStakeUsd: 3,
@@ -36,43 +39,47 @@ export const DEFAULTS = {
   mlOutcomeExecutionLatencyMs: 300,
   mlOutcomeExecutionMaxSlippage: 0.01,
   enableMlOutcomeRealTrading: false,
-  mlOutcomeRealAssets: ["BTC", "ETH", "SOL"],
+  mlOutcomeRealAssets: ["BTC", "ETH", "SOL", "XRP"],
   mlOutcomeRealSegments: [
-    "BTC:5m:UP",
     "ETH:5m:UP",
-    "ETH:5m:DOWN",
     "SOL:5m:UP",
     "SOL:5m:DOWN",
     "XRP:5m:DOWN",
-    "SOL:15m:UP",
     "BTC:15m:DOWN",
     "ETH:15m:DOWN",
     "ETH:15m:UP",
-    "XRP:15m:DOWN"
+    "SOL:15m:UP"
   ],
   mlOutcomeRealSegmentCheckpoints: {
-    "BTC:5m:UP": [30],
     "ETH:5m:UP": [30],
-    "ETH:5m:DOWN": [30],
     "SOL:5m:UP": [30],
     "SOL:5m:DOWN": [30],
     "XRP:5m:DOWN": [30],
-    "SOL:15m:UP": [60, 120, 180],
-    "BTC:15m:DOWN": [60, 180],
-    "ETH:15m:DOWN": [120, 180],
+    "BTC:15m:DOWN": [60, 120, 180],
+    "ETH:15m:DOWN": [60, 120],
     "ETH:15m:UP": [60],
-    "XRP:15m:DOWN": [60, 120, 180]
+    "SOL:15m:UP": [180]
   } as Record<string, number[]>,
+  mlOutcomeRealMinConfidenceByRule: {
+    "SOL:5m:UP:30": 0.80,
+    "BTC:15m:DOWN:60": 0.85,
+    "BTC:15m:DOWN:120": 0.90,
+    "ETH:15m:DOWN:60": 0.90,
+    "SOL:15m:UP:180": 0.85
+  } as Record<string, number>,
   mlOutcomeRealStakeUsd: 3,
   mlOutcomeRealStakeUsd15m: 1.5,
   mlOutcomeRealMaxOpenTrades: 2,
   mlOutcomeRealDailyStopLossUsd: 9,
+  mlOutcomeRealAbsoluteDailyStopLossUsd: 12,
+  mlOutcomeRealStopLossBaselineAt: null as string | null,
   mlMinResolvedTrades: 1000
 } as const;
 
 export const MIN_VALUES = {
   scanIntervalSeconds: 1,
   shortExitIntervalSeconds: 1,
+  higherTimeframeObservationIntervalSeconds: 10,
   shortExitRealStakeUsd: 0.01,
   shortExitRealEntryPrice: 0.01,
   simulatedStakeUsd: 0.01,
@@ -87,6 +94,7 @@ export const MIN_VALUES = {
   mlOutcomeRealStakeUsd: 1,
   mlOutcomeRealMaxOpenTrades: 1,
   mlOutcomeRealDailyStopLossUsd: 1,
+  mlOutcomeRealAbsoluteDailyStopLossUsd: 1,
   mlMinResolvedTrades: 0
 } as const;
 

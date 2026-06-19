@@ -16,6 +16,7 @@ const timeframePriority: Record<string, number> = {
   "5m": 90,
   "15m": 80,
   "1h": 65,
+  "4h": 55,
   "1d": 45,
   unknown: 0
 };

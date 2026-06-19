@@ -146,6 +146,10 @@ export function inferTimeframe(
     return "15m";
   }
 
+  if (/\b(4\s?H|4\s?HR|4\s?HOUR|4\s?HOURS|FOUR\s?HOUR|FOUR\s?HOURS)\b/.test(text)) {
+    return "4h";
+  }
+
   if (/\b(1\s?H|1\s?HR|1\s?HOUR|ONE\s?HOUR|HOURLY|THIS\s?HOUR|NEXT\s?HOUR|HOUR)\b/.test(text)) {
     return "1h";
   }

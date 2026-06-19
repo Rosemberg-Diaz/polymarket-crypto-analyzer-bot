@@ -49,6 +49,7 @@
     "ml:train-outcome": "tsx scripts/train-outcome-model.ts",
     "ml:analyze-outcome-shadow": "tsx scripts/analyze-outcome-shadow.ts",
     "ml:report-outcome-execution-shadow": "tsx scripts/report-ml-outcome-execution-shadow.ts",
+    "report:higher-timeframe-outcome": "tsx scripts/report-higher-timeframe-outcome-observation.ts",
     "generate:polymarket-api-keys": "tsx scripts/generate-polymarket-api-credentials.ts",
     "check:polymarket-balance": "tsx scripts/check-polymarket-balance.ts"
   },
