@@ -47,6 +47,7 @@
     "ml:train-entry-risk": "tsx scripts/train-entry-risk-model.ts",
     "ml:analyze-shadow": "tsx scripts/analyze-entry-risk-shadow.ts",
     "ml:train-outcome": "tsx scripts/train-outcome-model.ts",
+    "ml:train-outcome-candidate": "tsx scripts/train-outcome-model-candidate.ts",
     "ml:analyze-outcome-shadow": "tsx scripts/analyze-outcome-shadow.ts",
     "ml:report-outcome-execution-shadow": "tsx scripts/report-ml-outcome-execution-shadow.ts",
     "report:higher-timeframe-outcome": "tsx scripts/report-higher-timeframe-outcome-observation.ts",

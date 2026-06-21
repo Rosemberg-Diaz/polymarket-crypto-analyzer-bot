@@ -41,31 +41,30 @@ export const DEFAULTS = {
   enableMlOutcomeRealTrading: false,
   mlOutcomeRealAssets: ["BTC", "ETH", "SOL", "XRP"],
   mlOutcomeRealSegments: [
-    "ETH:5m:UP",
-    "SOL:5m:UP",
-    "SOL:5m:DOWN",
-    "XRP:5m:DOWN",
     "BTC:15m:DOWN",
+    "BTC:15m:UP",
     "ETH:15m:DOWN",
     "ETH:15m:UP",
-    "SOL:15m:UP"
+    "SOL:15m:UP",
+    "XRP:15m:DOWN"
   ],
   mlOutcomeRealSegmentCheckpoints: {
-    "ETH:5m:UP": [30],
-    "SOL:5m:UP": [30],
-    "SOL:5m:DOWN": [30],
-    "XRP:5m:DOWN": [30],
-    "BTC:15m:DOWN": [60, 120, 180],
-    "ETH:15m:DOWN": [60, 120],
+    "BTC:15m:DOWN": [180],
+    "BTC:15m:UP": [120],
+    "ETH:15m:DOWN": [120, 180],
     "ETH:15m:UP": [60],
-    "SOL:15m:UP": [180]
+    "SOL:15m:UP": [120, 180],
+    "XRP:15m:DOWN": [120]
   } as Record<string, number[]>,
   mlOutcomeRealMinConfidenceByRule: {
-    "SOL:5m:UP:30": 0.80,
-    "BTC:15m:DOWN:60": 0.85,
-    "BTC:15m:DOWN:120": 0.90,
-    "ETH:15m:DOWN:60": 0.90,
-    "SOL:15m:UP:180": 0.85
+    "BTC:15m:DOWN:180": 0.85,
+    "BTC:15m:UP:120": 0.85,
+    "ETH:15m:DOWN:120": 0.90,
+    "ETH:15m:DOWN:180": 0.85,
+    "ETH:15m:UP:60": 0.85,
+    "SOL:15m:UP:120": 0.85,
+    "SOL:15m:UP:180": 0.85,
+    "XRP:15m:DOWN:120": 0.85
   } as Record<string, number>,
   mlOutcomeRealStakeUsd: 3,
   mlOutcomeRealStakeUsd15m: 1.5,

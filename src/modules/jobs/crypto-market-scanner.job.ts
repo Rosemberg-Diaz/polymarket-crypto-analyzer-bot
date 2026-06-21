@@ -53,7 +53,7 @@ const UP_DOWN_5M_WINDOW_MS = 5 * 60 * 1000;
 const MIN_SECONDS_TO_CLOSE_FOR_OPERATIONAL_SIGNAL = 20;
 const FAST_UP_DOWN_ASSETS = new Set(["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]);
 // All checkpoints for observation/training. Execution filtering happens in live-outcome-checkpoint-trading.service
-export const OUTCOME_PREDICTION_CHECKPOINTS = [180, 120, 60, 30] as const;
+export const OUTCOME_PREDICTION_CHECKPOINTS = [180, 120, 60, 30, 15, 10] as const;
 const OUTCOME_CHECKPOINT_MAX_LATENESS_SECONDS = 45;
 
 export class CryptoMarketScannerJob {

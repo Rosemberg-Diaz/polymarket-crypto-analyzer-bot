@@ -22,6 +22,12 @@ import {
 } from "./logistic-regression.service";
 
 export const OUTCOME_MODEL_VERSION = "OUTCOME_UP_DOWN_LOGREG_V1";
+export interface OutcomeTrainingOptions {
+  outputDirectory?: string;
+  updateRuntimeCache?: boolean;
+  versionSuffix?: string;
+}
+
 const OFFICIAL_RESOLUTION_SOURCES = new Set([
   "POLYMARKET_EXPLICIT",
   "GAMMA_OUTCOME_PRICES",
@@ -53,7 +59,9 @@ export class OutcomeModelService {
     };
   }
 
-  async trainAllAndSave(): Promise<OutcomeModelArtifact[]> {
+  async trainAllAndSave(
+    options: OutcomeTrainingOptions = {}
+  ): Promise<OutcomeModelArtifact[]> {
     const samples = await loadNormalizedOutcomeSamples();
     const artifacts: OutcomeModelArtifact[] = [];
     for (const timeframe of ["5m", "15m"] as const) {
@@ -61,10 +69,15 @@ export class OutcomeModelService {
         (sample) => sample.features.timeframe === timeframe
       );
       const artifact = trainTimeframeModel(timeframeSamples, timeframe);
-      const modelPath = outcomeModelPath(timeframe);
+      if (options.versionSuffix) {
+        artifact.version = `${artifact.version}_${options.versionSuffix}`;
+      }
+      const modelPath = outcomeModelPath(timeframe, options.outputDirectory);
       fs.mkdirSync(path.dirname(modelPath), { recursive: true });
       fs.writeFileSync(modelPath, JSON.stringify(artifact, null, 2));
-      this.artifacts.set(timeframe, artifact);
+      if (options.updateRuntimeCache !== false) {
+        this.artifacts.set(timeframe, artifact);
+      }
       artifacts.push(artifact);
       this.logger?.info("UP/DOWN outcome shadow model trained.", {
         timeframe,
@@ -96,6 +109,23 @@ export class OutcomeModelService {
       return null;
     }
   }
+}
+
+export function evaluateOutcomeArtifactOnRecentHoldout(
+  artifact: OutcomeModelArtifact,
+  samples: OutcomeTrainingSample[],
+  timeframe: OutcomeTimeframe
+): OutcomeValidationMetrics {
+  const markets = groupSamplesByMarket(
+    samples.filter((sample) => sample.features.timeframe === timeframe)
+  ).sort((left, right) => left.at.getTime() - right.at.getTime());
+  const splitIndex = Math.max(1, Math.floor(markets.length * 0.8));
+  const validationMarkets = markets.slice(splitIndex);
+  return evaluateOutcomeModel(
+    validationMarkets.flatMap((market) => market.samples),
+    validationMarkets.length,
+    artifact
+  );
 }
 
 export async function loadNormalizedOutcomeSamples(): Promise<OutcomeTrainingSample[]> {
@@ -310,10 +340,12 @@ function groupSamplesByMarket(samples: OutcomeTrainingSample[]) {
   }));
 }
 
-function outcomeModelPath(timeframe: OutcomeTimeframe): string {
+function outcomeModelPath(
+  timeframe: OutcomeTimeframe,
+  outputDirectory?: string
+): string {
   return path.resolve(
-    process.cwd(),
-    "models",
+    outputDirectory ?? path.resolve(process.cwd(), "models"),
     `outcome-up-down-logistic-${timeframe}.json`
   );
 }

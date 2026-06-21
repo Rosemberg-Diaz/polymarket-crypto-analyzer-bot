@@ -60,6 +60,7 @@ export class MlOutcomeShadowExecutionService {
     decisionPrice: number;
     modelProbability: number;
     orderBook: PolymarketOrderBook | null;
+    budgetUsd?: number;
   }): Promise<MlOutcomeShadowExecution | null> {
     const existing = await prisma.mlOutcomeShadowExecution.findUnique({
       where: {
@@ -74,9 +75,11 @@ export class MlOutcomeShadowExecutionService {
       return null;
     }
 
+    const budgetUsd =
+      input.budgetUsd ?? config.mlOutcomeExecutionBudgetUsd;
     const evaluation = evaluateMlOutcomeFokExecution({
       orderBook: input.orderBook,
-      budget: config.mlOutcomeExecutionBudgetUsd,
+      budget: budgetUsd,
       decisionPrice: input.decisionPrice,
       modelProbability: input.modelProbability,
       maxSlippage: config.mlOutcomeExecutionMaxSlippage
@@ -92,7 +95,7 @@ export class MlOutcomeShadowExecutionService {
         tokenId: input.tokenId,
         checkpointSeconds: input.checkpointSeconds,
         actualSecondsToClose: input.actualSecondsToClose,
-        requestedBudget: decimal(config.mlOutcomeExecutionBudgetUsd),
+        requestedBudget: decimal(budgetUsd),
         status: evaluation.status,
         skipReason: evaluation.skipReason,
         minOrderSize: optionalDecimal(evaluation.minOrderSize),
@@ -122,7 +125,7 @@ export class MlOutcomeShadowExecutionService {
       predictedOutcome: input.predictedOutcome,
       status: evaluation.status,
       skipReason: evaluation.skipReason,
-      budget: config.mlOutcomeExecutionBudgetUsd,
+      budget: budgetUsd,
       decisionPrice: input.decisionPrice,
       averageEntryPrice: evaluation.averageEntryPrice,
       shares: evaluation.shares,

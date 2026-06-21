@@ -10,6 +10,7 @@ import { OutcomeCheckpointJob } from "./modules/jobs/outcome-checkpoint.job";
 import { ResolveObservationEvaluationsJob } from "./modules/jobs/resolve-observation-evaluations.job";
 import { ResolveMlOutcomeShadowExecutionsJob } from "./modules/jobs/resolve-ml-outcome-shadow-executions.job";
 import { ResolveLiveOutcomeCheckpointTradesJob } from "./modules/jobs/resolve-live-outcome-checkpoint-trades.job";
+import { ReconcilePolymarketWalletJob } from "./modules/jobs/reconcile-polymarket-wallet.job";
 import { ResolveRealisticShortExitExecutionsJob } from "./modules/jobs/resolve-realistic-short-exit-executions.job";
 import { ResolveSimulatedTradesJob } from "./modules/jobs/resolve-simulated-trades.job";
 import { ShortTermExitObserverJob } from "./modules/jobs/short-term-exit-observer.job";
@@ -31,6 +32,8 @@ async function bootstrap(): Promise<void> {
     new ResolveMlOutcomeShadowExecutionsJob(logger);
   const resolveLiveOutcomeCheckpointTradesJob =
     new ResolveLiveOutcomeCheckpointTradesJob(logger);
+  const reconcilePolymarketWalletJob =
+    new ReconcilePolymarketWalletJob(logger);
   const resolveRealisticShortExitExecutionsJob =
     new ResolveRealisticShortExitExecutionsJob(logger);
   const shortTermExitObserverJob = new ShortTermExitObserverJob(logger);
@@ -108,6 +111,7 @@ async function bootstrap(): Promise<void> {
         await resolveObservationEvaluationsJob.runOnce();
         await resolveMlOutcomeShadowExecutionsJob.runOnce();
         await resolveLiveOutcomeCheckpointTradesJob.runOnce();
+        await reconcilePolymarketWalletJob.runOnce();
         if (config.enableShortExitObservation) {
           await resolveRealisticShortExitExecutionsJob.runOnce();
         }
@@ -277,7 +281,13 @@ async function bootstrap(): Promise<void> {
   });
   logger.info("Observaciones de prediccion UP/DOWN", {
     strategy: "OUTCOME_CHECKPOINT_V1",
-    checkpointsSeconds: [180, 120, 60, 30],
+    checkpointsSeconds: [180, 120, 60, 30, 15, 10],
+    lateFiveMinuteCheckpoints: {
+      checkpointsSeconds: [15, 10],
+      simulatedBudgetUsd: 1.5,
+      independentPrediction: true,
+      realTrading: false
+    },
     intervalSeconds: 5,
     job: "LIGHTWEIGHT_CURRENT_MARKETS_ONLY",
     mode: "OBSERVATION_ONLY"

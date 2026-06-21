@@ -85,7 +85,8 @@ describe("CryptoMarketScannerJob prediction persistence", () => {
     expect(getDueOutcomePredictionCheckpoints(103)).toEqual([120]);
     expect(getDueOutcomePredictionCheckpoints(58)).toEqual([60]);
     expect(getDueOutcomePredictionCheckpoints(20)).toEqual([30]);
-    expect(getDueOutcomePredictionCheckpoints(10)).toEqual([30]);
+    expect(getDueOutcomePredictionCheckpoints(15)).toEqual([15]);
+    expect(getDueOutcomePredictionCheckpoints(10)).toEqual([10]);
     expect(getDueOutcomePredictionCheckpoints(220)).toEqual([]);
   });
 

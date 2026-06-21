@@ -3,7 +3,10 @@ import { CryptoAsset } from "../../config/assets";
 import { config } from "../../config/env";
 import { prisma } from "../../database/client";
 import { LoggerService } from "../logger/logger.service";
-import { PolymarketTradingService } from "./polymarket-trading.service";
+import {
+  MarketOrderExecutionResult,
+  PolymarketTradingService
+} from "./polymarket-trading.service";
 
 const CHECKPOINTS_BY_TIMEFRAME = {
   "5m": [30],
@@ -13,6 +16,8 @@ const OPEN_STATUSES = ["ENTRY_ATTEMPTING", "OPEN"];
 const PRICE_EPSILON = 0.000001;
 const TAKER_FEE_RATE = 0.07;
 const MIN_FOK_BUDGET_USD = 1.5;
+const FULL_FOK_BUDGET_USD = 3;
+const FIVE_MINUTE_MAX_REAL_ENTRY_PRICE = 0.80;
 
 function getStakeForTimeframe(timeframe: string): number {
   return timeframe === "15m" ? config.mlOutcomeRealStakeUsd15m : config.mlOutcomeRealStakeUsd;
@@ -105,11 +110,33 @@ export class LiveOutcomeCheckpointTradingService {
     }
 
     try {
-      const result = await this.tradingService!.placeFokMarketBuy(
+      const initialResult = await this.tradingService!.placeFokMarketBuy(
         execution.tokenId,
         dynamicBudget,
         maxPrice
       );
+      let result = initialResult;
+      let executedBudget = dynamicBudget;
+
+      if (
+        execution.timeframe === "5m" &&
+        shouldRetryFokAtMinimum(dynamicBudget, initialResult)
+      ) {
+        this.logger.info("Retrying failed 5m FOK buy immediately at minimum budget.", {
+          tradeId: trade.id,
+          executionId: execution.id,
+          assetSymbol: execution.assetSymbol,
+          initialBudget: dynamicBudget,
+          retryBudget: MIN_FOK_BUDGET_USD,
+          maxPrice
+        });
+        result = await this.tradingService!.placeFokMarketBuy(
+          execution.tokenId,
+          MIN_FOK_BUDGET_USD,
+          maxPrice
+        );
+        executedBudget = MIN_FOK_BUDGET_USD;
+      }
 
       if (!result.success || !result.filledShares || !result.cashAmount) {
         const error = result.error ?? "FOK buy did not produce a confirmed fill.";
@@ -117,8 +144,12 @@ export class LiveOutcomeCheckpointTradingService {
           where: { id: trade.id },
           data: {
             status: "FAILED",
+            reconciliationStatus: "NOT_APPLICABLE",
             errorMessage: error,
-            responseData: stringifyResult(result)
+            responseData: stringifyResult({
+              initial: initialResult,
+              retry: result === initialResult ? null : result
+            })
           }
         });
         this.logger.warn("Live outcome checkpoint FOK buy failed.", {
@@ -134,13 +165,17 @@ export class LiveOutcomeCheckpointTradingService {
         where: { id: trade.id },
         data: {
           status: "OPEN",
+          budget: decimal(executedBudget),
           externalOrderId: result.orderId,
           filledShares: decimal(result.filledShares),
           cashAmount: decimal(result.cashAmount),
           averagePrice: decimal(
             result.averagePrice ?? result.cashAmount / result.filledShares
           ),
-          responseData: stringifyResult(result),
+          responseData: stringifyResult({
+            initial: initialResult,
+            retry: result === initialResult ? null : result
+          }),
           openedAt: new Date()
         }
       });
@@ -153,7 +188,8 @@ export class LiveOutcomeCheckpointTradingService {
         timeframe: execution.timeframe,
         predictedOutcome: execution.predictedOutcome,
         checkpointSeconds: execution.checkpointSeconds,
-        budgetUsd: dynamicBudget,
+        budgetUsd: executedBudget,
+        retriedAtMinimumBudget: executedBudget !== dynamicBudget,
         filledShares: result.filledShares,
         cashAmount: result.cashAmount,
         averagePrice: result.averagePrice
@@ -163,6 +199,7 @@ export class LiveOutcomeCheckpointTradingService {
         where: { id: trade.id },
         data: {
           status: "FAILED",
+          reconciliationStatus: "NOT_APPLICABLE",
           errorMessage: error instanceof Error ? error.message : String(error)
         }
       });
@@ -292,6 +329,17 @@ export function calculateDynamicFokBudget(
   return Math.floor((boundedCost + Number.EPSILON) * 100) / 100;
 }
 
+export function shouldRetryFokAtMinimum(
+  initialBudget: number,
+  result: MarketOrderExecutionResult
+): boolean {
+  return (
+    initialBudget >= FULL_FOK_BUDGET_USD - PRICE_EPSILON &&
+    result.success !== true &&
+    result.error?.toLowerCase().includes("fully filled") === true
+  );
+}
+
 export function isLiveOutcomeCheckpointEligible(
   execution: MlOutcomeShadowExecution
 ): LiveOutcomeCheckpointGate {
@@ -337,6 +385,20 @@ export function isLiveOutcomeCheckpointEligible(
   }
 
   if (
+    execution.timeframe === "5m" &&
+    !isUnfilteredEthFiveMinuteUp(execution) &&
+    Number(execution.worstFillPrice) >= FIVE_MINUTE_MAX_REAL_ENTRY_PRICE
+  ) {
+    return {
+      allowed: false,
+      reason:
+        `5M_ENTRY_PRICE_TOO_HIGH:` +
+        `${Number(execution.worstFillPrice).toFixed(4)} >= ` +
+        `${FIVE_MINUTE_MAX_REAL_ENTRY_PRICE.toFixed(2)}`
+    };
+  }
+
+  if (
     execution.slippage === null ||
     Number(execution.slippage) >
       config.mlOutcomeExecutionMaxSlippage + PRICE_EPSILON
@@ -345,6 +407,19 @@ export function isLiveOutcomeCheckpointEligible(
   }
 
   return { allowed: true };
+}
+
+function isUnfilteredEthFiveMinuteUp(
+  execution: Pick<
+    MlOutcomeShadowExecution,
+    "assetSymbol" | "timeframe" | "predictedOutcome"
+  >
+): boolean {
+  return (
+    execution.assetSymbol === "ETH" &&
+    execution.timeframe === "5m" &&
+    execution.predictedOutcome === "UP"
+  );
 }
 
 export function wouldExceedDailyStopLoss(
@@ -375,7 +450,7 @@ export function getMlOutcomeRealMinConfidence(
     return execution.timeframe === "15m" ? 0.80 : 0.70;
   }
 
-  return execution.timeframe === "15m" ? 0.80 : 0;
+  return execution.timeframe === "15m" ? 0.80 : 0.70;
 }
 
 function isAllowedRealSegment(execution: MlOutcomeShadowExecution): boolean {
@@ -421,10 +496,13 @@ async function getPilotProfitSince(start: Date): Promise<number> {
       status: "RESOLVED",
       profit: { not: null }
     },
-    select: { profit: true }
+    select: { actualProfit: true, profit: true }
   });
 
-  return rows.reduce((sum, row) => sum + Number(row.profit ?? 0), 0);
+  return rows.reduce(
+    (sum, row) => sum + Number(row.actualProfit ?? row.profit ?? 0),
+    0
+  );
 }
 
 function getBogotaDayStartUtc(): Date {

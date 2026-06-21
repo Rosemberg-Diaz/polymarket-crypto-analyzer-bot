@@ -4,7 +4,10 @@ import { config } from "../../config/env";
 import { prisma } from "../../database/client";
 import { LoggerService } from "../logger/logger.service";
 import { OutcomeModelService } from "../learning/outcome-model.service";
-import { CryptoPriceService } from "../market-data/crypto-price.service";
+import {
+  CryptoPriceService,
+  CryptoSpotPrice
+} from "../market-data/crypto-price.service";
 import { PolymarketClient } from "../polymarket/polymarket.client";
 import { MlOutcomeShadowExecutionService } from "../simulations/ml-outcome-shadow-execution.service";
 import { ObservationEvaluationService } from "../simulations/observation-evaluation.service";
@@ -14,6 +17,8 @@ import { getDueOutcomePredictionCheckpoints } from "./crypto-market-scanner.job"
 
 export const OUTCOME_CHECKPOINT_STRATEGY = "OUTCOME_CHECKPOINT_V1";
 const REAL_ORDER_CHAINLINK_MAX_AGE_MS = 90_000;
+export const LATE_FIVE_MINUTE_CHECKPOINTS = [15, 10] as const;
+export const LATE_FIVE_MINUTE_SHADOW_BUDGET_USD = 1.5;
 
 export class OutcomeCheckpointJob {
   private readonly client = new PolymarketClient();
@@ -109,7 +114,12 @@ export class OutcomeCheckpointJob {
         0,
         Math.floor((market.endDate.getTime() - Date.now()) / 1_000)
       );
-      const checkpoints = getDueOutcomePredictionCheckpoints(secondsToClose);
+      const checkpoints = getDueOutcomePredictionCheckpoints(secondsToClose)
+        .filter(
+          (checkpoint) =>
+            market.timeframe === "5m" ||
+            !isLateFiveMinuteCheckpoint(checkpoint)
+        );
       const latestSnapshot = market.snapshots[0];
       const targetPrice = latestSnapshot?.targetPrice;
       const currentAssetPrice = latestSnapshot?.currentAssetPrice;
@@ -213,11 +223,10 @@ export class OutcomeCheckpointJob {
       downPriceResponse.price ??
       (downOutcome.currentPrice === null ? null : Number(downOutcome.currentPrice));
 
-    const freshChainlinkPrice =
-      this.cryptoPriceService.getFreshPolymarketChainlinkPrice(
-        candidate.assetSymbol,
-        REAL_ORDER_CHAINLINK_MAX_AGE_MS
-      );
+    const freshChainlinkPrice = await this.getFreshChainlinkPrice(
+      candidate.market.id,
+      candidate.assetSymbol
+    );
     if (!freshChainlinkPrice) {
       const warningKey =
         `${candidate.market.id}:${candidate.checkpointSeconds}`;
@@ -271,22 +280,28 @@ export class OutcomeCheckpointJob {
       checkpointSeconds: candidate.checkpointSeconds
     });
 
-    // Soft trend validation: check if price has been consistently above/below target
-    const trendValidation = await this.validateTrend(
-      candidate.market.id,
-      candidate.targetPrice,
-      currentAssetPrice,
-      mlScore?.predictedOutcome ?? null,
-      candidate.secondsToClose
+    const lateCheckpoint = isLateFiveMinuteCheckpoint(
+      candidate.checkpointSeconds
     );
-    if (!trendValidation.allowed) {
-      this.logger.info("ML outcome trade filtered by trend validation.", {
-        marketId: candidate.market.id,
-        assetSymbol: candidate.market.assetSymbol,
-        predictedOutcome: mlScore?.predictedOutcome,
-        reason: trendValidation.reason
-      });
-      return;
+    // Late checkpoints intentionally capture every eligible case so their
+    // independent rules can be evaluated without inheriting the 30s gate.
+    if (!lateCheckpoint) {
+      const trendValidation = await this.validateTrend(
+        candidate.market.id,
+        candidate.targetPrice,
+        currentAssetPrice,
+        mlScore?.predictedOutcome ?? null,
+        candidate.secondsToClose
+      );
+      if (!trendValidation.allowed) {
+        this.logger.info("ML outcome trade filtered by trend validation.", {
+          marketId: candidate.market.id,
+          assetSymbol: candidate.market.assetSymbol,
+          predictedOutcome: mlScore?.predictedOutcome,
+          reason: trendValidation.reason
+        });
+        return;
+      }
     }
 
     const mlOutcomeEntryPrice = mlScore?.predictedOutcome === "UP"
@@ -321,11 +336,11 @@ export class OutcomeCheckpointJob {
       botProbability: entryPrice,
       impliedProbability: entryPrice,
       edge: 0,
-      entryRule:
-        `OBSERVE_OUTCOME_CHECKPOINT_${candidate.checkpointSeconds}S`,
-      finalEntryRule:
-        `OBSERVE_OUTCOME_CHECKPOINT_${candidate.checkpointSeconds}S`,
-      observationType: "OUTCOME_CHECKPOINT",
+      entryRule: getOutcomeCheckpointEntryRule(candidate.checkpointSeconds),
+      finalEntryRule: getOutcomeCheckpointEntryRule(candidate.checkpointSeconds),
+      observationType: lateCheckpoint
+        ? "LATE_OUTCOME_CHECKPOINT"
+        : "OUTCOME_CHECKPOINT",
       checkpointSeconds: candidate.checkpointSeconds,
       captureJob: "LIGHTWEIGHT_5S"
     };
@@ -339,7 +354,9 @@ export class OutcomeCheckpointJob {
         distanceToTargetPercent: decimal(distanceToTargetPercent),
         secondsToClose: candidate.secondsToClose,
         rawData: JSON.stringify({
-          observationType: "OUTCOME_CHECKPOINT",
+          observationType: lateCheckpoint
+            ? "LATE_OUTCOME_CHECKPOINT"
+            : "OUTCOME_CHECKPOINT",
           checkpointSeconds: candidate.checkpointSeconds,
           captureJob: "LIGHTWEIGHT_5S",
           targetPriceSource: targetMetadata.source,
@@ -366,7 +383,8 @@ export class OutcomeCheckpointJob {
         confidence: decimal(0.5),
         recommendation: "WAIT",
         reason:
-          `Checkpoint ${candidate.checkpointSeconds}s: ` +
+          `${lateCheckpoint ? "Late checkpoint" : "Checkpoint"} ` +
+          `${candidate.checkpointSeconds}s: ` +
           `prediccion observacional ${predictedOutcome}.`,
         features: JSON.stringify(features),
         historicalSummary:
@@ -394,8 +412,12 @@ export class OutcomeCheckpointJob {
     await this.observationService.createPendingObservation(
       prediction.id,
       candidate.market.id,
-      `OUTCOME_CHECKPOINT_${candidate.checkpointSeconds}S`,
-      config.simulatedStakeUsd,
+      lateCheckpoint
+        ? `LATE_OUTCOME_CHECKPOINT_${candidate.checkpointSeconds}S`
+        : `OUTCOME_CHECKPOINT_${candidate.checkpointSeconds}S`,
+      lateCheckpoint
+        ? LATE_FIVE_MINUTE_SHADOW_BUDGET_USD
+        : config.simulatedStakeUsd,
       entryPrice
     );
 
@@ -429,14 +451,16 @@ export class OutcomeCheckpointJob {
           mlScore.predictedOutcome === "UP"
             ? mlScore.probabilityUp
             : mlScore.probabilityDown,
-        orderBook: delayedOrderBook
+        orderBook: delayedOrderBook,
+        budgetUsd: lateCheckpoint
+          ? LATE_FIVE_MINUTE_SHADOW_BUDGET_USD
+          : undefined
       });
-      if (shadowExecution) {
-        const preflightPrice =
-          this.cryptoPriceService.getFreshPolymarketChainlinkPrice(
-            candidate.assetSymbol,
-            REAL_ORDER_CHAINLINK_MAX_AGE_MS
-          );
+      if (shadowExecution && !lateCheckpoint) {
+        const preflightPrice = await this.getFreshChainlinkPrice(
+          candidate.market.id,
+          candidate.assetSymbol
+        );
         const preflightDirection = preflightPrice?.priceUsd === null ||
           preflightPrice?.priceUsd === undefined
           ? null
@@ -465,6 +489,10 @@ export class OutcomeCheckpointJob {
       assetSymbol: candidate.market.assetSymbol,
       timeframe: candidate.market.timeframe,
       checkpointSeconds: candidate.checkpointSeconds,
+      lateObservationOnly: lateCheckpoint,
+      shadowBudgetUsd: lateCheckpoint
+        ? LATE_FIVE_MINUTE_SHADOW_BUDGET_USD
+        : config.mlOutcomeExecutionBudgetUsd,
       actualSecondsToClose: candidate.secondsToClose,
       predictedOutcome,
       entryPrice,
@@ -474,6 +502,55 @@ export class OutcomeCheckpointJob {
       currentAssetPriceSource: freshChainlinkPrice.source,
       currentAssetPriceTickAt: freshChainlinkPrice.fetchedAt.toISOString()
     });
+  }
+
+  private async getFreshChainlinkPrice(
+    marketId: string,
+    assetSymbol: CryptoAsset
+  ): Promise<CryptoSpotPrice | null> {
+    const persistentPrice =
+      this.cryptoPriceService.getFreshPolymarketChainlinkPrice(
+        assetSymbol,
+        REAL_ORDER_CHAINLINK_MAX_AGE_MS
+      );
+    if (persistentPrice) {
+      return persistentPrice;
+    }
+
+    const snapshots = await prisma.marketSnapshot.findMany({
+      where: {
+        marketId,
+        currentAssetPrice: { not: null },
+        createdAt: {
+          gte: new Date(Date.now() - REAL_ORDER_CHAINLINK_MAX_AGE_MS)
+        }
+      },
+      select: {
+        currentAssetPrice: true,
+        rawData: true,
+        createdAt: true
+      },
+      orderBy: { createdAt: "desc" },
+      take: 12
+    });
+
+    for (const snapshot of snapshots) {
+      const price = extractScannerChainlinkPrice(
+        {
+          currentAssetPrice: Number(snapshot.currentAssetPrice),
+          rawData: snapshot.rawData,
+          createdAt: snapshot.createdAt
+        },
+        assetSymbol,
+        Date.now(),
+        REAL_ORDER_CHAINLINK_MAX_AGE_MS
+      );
+      if (price) {
+        return price;
+      }
+    }
+
+    return null;
   }
 
   private async validateTrend(
@@ -539,6 +616,91 @@ export class OutcomeCheckpointJob {
 
     return { allowed: true };
   }
+}
+
+export function isLateFiveMinuteCheckpoint(
+  checkpointSeconds: number
+): boolean {
+  return (LATE_FIVE_MINUTE_CHECKPOINTS as readonly number[])
+    .includes(checkpointSeconds);
+}
+
+export function getOutcomeCheckpointEntryRule(
+  checkpointSeconds: number
+): string {
+  return isLateFiveMinuteCheckpoint(checkpointSeconds)
+    ? `OBSERVE_LATE_OUTCOME_CHECKPOINT_${checkpointSeconds}S`
+    : `OBSERVE_OUTCOME_CHECKPOINT_${checkpointSeconds}S`;
+}
+
+export function extractScannerChainlinkPrice(
+  snapshot: {
+    currentAssetPrice: number;
+    rawData: string | null;
+    createdAt: Date;
+  },
+  assetSymbol: CryptoAsset,
+  nowMs: number,
+  maxAgeMs: number
+): CryptoSpotPrice | null {
+  if (
+    !Number.isFinite(snapshot.currentAssetPrice) ||
+    snapshot.currentAssetPrice <= 0
+  ) {
+    return null;
+  }
+
+  const raw = parseJsonRecord(snapshot.rawData);
+  const orderbookSummary = asRecord(raw?.orderbookSummary);
+  const spotPrice = asRecord(orderbookSummary?.spotPrice);
+  if (spotPrice?.source !== "POLYMARKET_CHAINLINK") {
+    return null;
+  }
+
+  const fetchedAtValue = spotPrice.fetchedAt;
+  if (typeof fetchedAtValue !== "string") {
+    return null;
+  }
+  const fetchedAt = new Date(fetchedAtValue);
+  const ageMs = nowMs - fetchedAt.getTime();
+  if (
+    !Number.isFinite(fetchedAt.getTime()) ||
+    ageMs < 0 ||
+    ageMs > maxAgeMs
+  ) {
+    return null;
+  }
+
+  const rawPrice = Number(spotPrice.priceUsd);
+  const priceUsd =
+    Number.isFinite(rawPrice) && rawPrice > 0
+      ? rawPrice
+      : snapshot.currentAssetPrice;
+
+  return {
+    assetSymbol,
+    priceUsd,
+    source: "POLYMARKET_CHAINLINK",
+    fetchedAt,
+    receivedAt: snapshot.createdAt
+  };
+}
+
+function parseJsonRecord(value: string | null): Record<string, unknown> | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    return asRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function toCryptoAsset(value: string): CryptoAsset | null {

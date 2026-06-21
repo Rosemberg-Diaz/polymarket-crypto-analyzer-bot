@@ -308,6 +308,14 @@ model LiveOutcomeCheckpointTrade {
   finalValue           Decimal?
   profit               Decimal?
   roi                  Decimal?
+  actualBuyUsdc        Decimal?
+  actualPayoutUsdc     Decimal?
+  actualProfit         Decimal?
+  actualRoi            Decimal?
+  buyTransactionHash   String?
+  redeemTransactionHash String?
+  reconciliationStatus String                   @default("PENDING")
+  reconciledAt         DateTime?
   openedAt             DateTime?
   resolvedAt           DateTime?
   createdAt            DateTime                 @default(now())
@@ -319,8 +327,34 @@ model LiveOutcomeCheckpointTrade {
   @@index([predictedOutcome])
   @@index([checkpointSeconds])
   @@index([status])
+  @@index([reconciliationStatus])
   @@index([createdAt])
   @@index([resolvedAt])
+}
+
+model WalletDailyPnl {
+  id                    String   @id @default(cuid())
+  dayKey                String   @unique
+  timezone              String   @default("America/Bogota")
+  openingCashUsd        Decimal
+  openingPositionsUsd   Decimal
+  openingEquityUsd      Decimal
+  closingCashUsd        Decimal
+  closingPositionsUsd   Decimal
+  closingEquityUsd      Decimal
+  buyUsdc               Decimal  @default(0)
+  sellUsdc              Decimal  @default(0)
+  redeemUsdc            Decimal  @default(0)
+  realizedTradingPnl    Decimal  @default(0)
+  equityChange          Decimal  @default(0)
+  isComplete            Boolean  @default(false)
+  firstCapturedAt       DateTime
+  lastCapturedAt        DateTime
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([dayKey])
+  @@index([lastCapturedAt])
 }
 
 model ShortTermExitObservation {
