@@ -85,6 +85,9 @@ describe("SignalEngine learning safeguards", () => {
     const signal = await engine.generateSignal(
       makeInput({
         assetSymbol: "BTC",
+        marketSlug: "btc-updown-15m",
+        marketQuestion: "BTC Up or Down in 15 minutes?",
+        timeframe: "15m",
         currentAssetPrice: 101.5,
         upPrice: 0.7,
         downPrice: 0.29,
@@ -134,6 +137,9 @@ describe("SignalEngine learning safeguards", () => {
     const signal = await engine.generateSignal(
       makeInput({
         assetSymbol: "BTC",
+        marketSlug: "btc-updown-15m",
+        marketQuestion: "BTC Up or Down in 15 minutes?",
+        timeframe: "15m",
         currentAssetPrice: 100.22,
         targetPrice: 100,
         upPrice: 0.55,
@@ -176,6 +182,9 @@ describe("SignalEngine learning safeguards", () => {
     const signal = await engine.generateSignal(
       makeInput({
         assetSymbol: "SOL",
+        marketSlug: "sol-updown-15m",
+        marketQuestion: "SOL Up or Down in 15 minutes?",
+        timeframe: "15m",
         currentAssetPrice: 100.22,
         targetPrice: 100,
         upPrice: 0.55,

@@ -178,11 +178,15 @@ function parseHtfRealSegments(value: string | undefined): string[] {
   const segments = rawSegments
     .split(",")
     .map((segment) => segment.trim().toUpperCase())
-    .filter((segment) => {
+    .flatMap((segment) => {
       const [asset, timeframe] = segment.split(":");
       const isAsset = SUPPORTED_CRYPTO_ASSETS.includes(asset as CryptoAsset);
       const isTimeframe = timeframe === "1H" || timeframe === "4H";
-      return isAsset && isTimeframe;
+      if (!isAsset || !isTimeframe) {
+        return [];
+      }
+
+      return [`${asset}:${timeframe.toLowerCase()}`];
     });
 
   return segments.length > 0

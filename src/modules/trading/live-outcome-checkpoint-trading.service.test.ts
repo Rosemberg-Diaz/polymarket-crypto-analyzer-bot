@@ -144,10 +144,7 @@ describe("live outcome checkpoint pilot gate", () => {
       { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 180 },
       { assetSymbol: "BTC", predictedOutcome: "UP", checkpointSeconds: 120 },
       { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 120 },
-      { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 180 },
       { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 60 },
-      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 120 },
-      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 180 },
       { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 120 }
     ];
     for (const tc of testCases) {
@@ -170,8 +167,11 @@ describe("live outcome checkpoint pilot gate", () => {
       { assetSymbol: "BTC", predictedOutcome: "UP", checkpointSeconds: 180 },
       { assetSymbol: "BTC", predictedOutcome: "UP", checkpointSeconds: 60 },
       { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 60 },
+      { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 180 },
       { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 120 },
       { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 180 },
+      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 120 },
+      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 180 },
       { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 60 },
       { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 180 },
       { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 60 }
@@ -293,10 +293,10 @@ describe("live outcome checkpoint confidence thresholds", () => {
       checkpointSeconds: 120
     }))).toBe(0.90);
     expect(getMlOutcomeRealMinConfidence(execution({
-      assetSymbol: "SOL",
+      assetSymbol: "XRP",
       timeframe: "15m",
-      predictedOutcome: "UP",
-      checkpointSeconds: 180
+      predictedOutcome: "DOWN",
+      checkpointSeconds: 120
     }))).toBe(0.85);
   });
 
