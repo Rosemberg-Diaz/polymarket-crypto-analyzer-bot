@@ -1,0 +1,79 @@
+{
+  "generatedAt": "2026-06-19T16:12:32.538Z",
+  "outputDirectory": "C:\\Personal\\Repos\\polymarket-crypto-analyzer-bot\\models\\candidates\\20260619T161232Z",
+  "productionFilesModified": false,
+  "runtimeCacheModified": false,
+  "automaticallyPromoted": false,
+  "comparisons": [
+    {
+      "timeframe": "5m",
+      "productionVersion": "OUTCOME_UP_DOWN_LOGREG_V1_5M",
+      "candidateVersion": "OUTCOME_UP_DOWN_LOGREG_V1_5M_CANDIDATE_20260619T161232Z",
+      "productionTrainedAt": "2026-06-18T04:45:26.710Z",
+      "candidateTrainedAt": "2026-06-19T16:13:19.733Z",
+      "productionTrainingMarkets": 7284,
+      "candidateTrainingMarkets": 9346,
+      "incumbentOnCurrentHoldout": {
+        "samples": 7112,
+        "markets": 1870,
+        "accuracy": 0.8532058492688414,
+        "precisionUp": 0.8659378596087457,
+        "precisionDown": 0.841034103410341,
+        "recallUp": 0.8389074693422519,
+        "recallDown": 0.8677639046538025,
+        "baselineMarketAccuracy": 0.8523622047244095,
+        "baselineSpotAccuracy": 0.8260686164229472
+      },
+      "candidateOnCurrentHoldout": {
+        "samples": 7112,
+        "markets": 1870,
+        "accuracy": 0.8534870641169854,
+        "precisionUp": 0.8662255466052935,
+        "precisionDown": 0.8413091309130913,
+        "recallUp": 0.8391861761426979,
+        "recallDown": 0.8680476730987514,
+        "baselineMarketAccuracy": 0.8523622047244095,
+        "baselineSpotAccuracy": 0.8260686164229472
+      },
+      "accuracyDelta": 0.0002812148481440291,
+      "precisionUpDelta": 0.00028768699654779795,
+      "precisionDownDelta": 0.0002750275027503246,
+      "automaticallyPromoted": false
+    },
+    {
+      "timeframe": "15m",
+      "productionVersion": "OUTCOME_UP_DOWN_LOGREG_V1_15M",
+      "candidateVersion": "OUTCOME_UP_DOWN_LOGREG_V1_15M_CANDIDATE_20260619T161232Z",
+      "productionTrainedAt": "2026-06-18T04:45:31.722Z",
+      "candidateTrainedAt": "2026-06-19T16:13:26.428Z",
+      "productionTrainingMarkets": 2388,
+      "candidateTrainingMarkets": 3084,
+      "incumbentOnCurrentHoldout": {
+        "samples": 2368,
+        "markets": 617,
+        "accuracy": 0.926097972972973,
+        "precisionUp": 0.9161129568106312,
+        "precisionDown": 0.936426116838488,
+        "recallUp": 0.9371282922684792,
+        "recallDown": 0.9151973131821999,
+        "baselineMarketAccuracy": 0.9244087837837838,
+        "baselineSpotAccuracy": 0.9075168918918919
+      },
+      "candidateOnCurrentHoldout": {
+        "samples": 2368,
+        "markets": 617,
+        "accuracy": 0.926097972972973,
+        "precisionUp": 0.9161129568106312,
+        "precisionDown": 0.936426116838488,
+        "recallUp": 0.9371282922684792,
+        "recallDown": 0.9151973131821999,
+        "baselineMarketAccuracy": 0.9244087837837838,
+        "baselineSpotAccuracy": 0.9075168918918919
+      },
+      "accuracyDelta": 0,
+      "precisionUpDelta": 0,
+      "precisionDownDelta": 0,
+      "automaticallyPromoted": false
+    }
+  ]
+}

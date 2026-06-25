@@ -20,7 +20,9 @@ const FULL_FOK_BUDGET_USD = 3;
 const FIVE_MINUTE_MAX_REAL_ENTRY_PRICE = 0.80;
 
 function getStakeForTimeframe(timeframe: string): number {
-  return timeframe === "15m" ? config.mlOutcomeRealStakeUsd15m : config.mlOutcomeRealStakeUsd;
+  if (timeframe === "15m") return config.mlOutcomeRealStakeUsd15m;
+  if (timeframe === "1h" || timeframe === "4h") return config.htfRealStakeUsd;
+  return config.mlOutcomeRealStakeUsd;
 }
 
 export type LiveOutcomeCheckpointGate =
@@ -36,7 +38,7 @@ export class LiveOutcomeCheckpointTradingService {
   isEnabled(): boolean {
     return Boolean(
       config.enableRealTrading &&
-      config.enableMlOutcomeRealTrading &&
+      (config.enableMlOutcomeRealTrading || config.enableHtfRealTrading) &&
       config.appMode === "LIVE_TRADING" &&
       this.tradingService
     );
@@ -51,6 +53,27 @@ export class LiveOutcomeCheckpointTradingService {
         timeframe: execution.timeframe,
         checkpointSeconds: execution.checkpointSeconds,
         reason: gate.reason
+      });
+      return;
+    }
+
+    // Check if HTF trading is enabled for HTF executions
+    const isHtf = execution.timeframe === "1h" || execution.timeframe === "4h";
+    if (isHtf && !config.enableHtfRealTrading) {
+      this.logger.info("HTF real trading disabled, skipping.", {
+        executionId: execution.id,
+        assetSymbol: execution.assetSymbol,
+        timeframe: execution.timeframe
+      });
+      return;
+    }
+
+    // Check if 15m trading is enabled for 15m executions
+    if (!isHtf && !config.enableMlOutcomeRealTrading) {
+      this.logger.info("15m real trading disabled, skipping.", {
+        executionId: execution.id,
+        assetSymbol: execution.assetSymbol,
+        timeframe: execution.timeframe
       });
       return;
     }
@@ -228,25 +251,37 @@ export class LiveOutcomeCheckpointTradingService {
       return { allowed: false, reason: "LIVE_OUTCOME_PILOT_DISABLED" };
     }
 
+    // Use HTF-specific settings for 1h/4h
+    const isHtf = execution.timeframe === "1h" || execution.timeframe === "4h";
+    const maxOpenTrades = isHtf ? config.htfRealMaxOpenTrades : config.mlOutcomeRealMaxOpenTrades;
+    const dailyStopLoss = isHtf ? config.htfRealDailyStopLossUsd : config.mlOutcomeRealDailyStopLossUsd;
+    const absoluteDailyStopLoss = isHtf ? config.htfRealAbsoluteDailyStopLossUsd : config.mlOutcomeRealAbsoluteDailyStopLossUsd;
+
     const openTrades = await prisma.liveOutcomeCheckpointTrade.findMany({
       where: { status: { in: OPEN_STATUSES } },
-      select: { budget: true }
+      select: { budget: true, timeframe: true }
     });
-    if (openTrades.length >= config.mlOutcomeRealMaxOpenTrades) {
+
+    // Filter open trades by type (HTF vs 15m) for separate limits
+    const htfOpenTrades = openTrades.filter(t => t.timeframe === "1h" || t.timeframe === "4h");
+    const regularOpenTrades = openTrades.filter(t => t.timeframe !== "1h" && t.timeframe !== "4h");
+
+    const relevantOpenTrades = isHtf ? htfOpenTrades : regularOpenTrades;
+    if (relevantOpenTrades.length >= maxOpenTrades) {
       return {
         allowed: false,
-        reason: `MAX_OPEN_TRADES_REACHED:${openTrades.length}`
+        reason: `MAX_OPEN_TRADES_REACHED:${relevantOpenTrades.length}`
       };
     }
 
     const [dailyProfit, operationalProfit] = await Promise.all([
-      getPilotProfitSince(getBogotaDayStartUtc()),
+      getPilotProfitSince(getBogotaDayStartUtc(), isHtf),
       getPilotProfitSince(
-        config.mlOutcomeRealStopLossBaselineAt ?? getBogotaDayStartUtc()
+        config.mlOutcomeRealStopLossBaselineAt ?? getBogotaDayStartUtc(), isHtf
       )
     ]);
     const stakeForTimeframe = getStakeForTimeframe(execution.timeframe);
-    const openRisk = openTrades.reduce(
+    const openRisk = relevantOpenTrades.reduce(
       (sum, trade) => sum + Number(trade.budget),
       0
     );
@@ -254,7 +289,7 @@ export class LiveOutcomeCheckpointTradingService {
       operationalProfit,
       openRisk,
       stakeForTimeframe,
-      config.mlOutcomeRealDailyStopLossUsd
+      dailyStopLoss
     )) {
       return {
         allowed: false,
@@ -268,7 +303,7 @@ export class LiveOutcomeCheckpointTradingService {
       dailyProfit,
       openRisk,
       stakeForTimeframe,
-      config.mlOutcomeRealAbsoluteDailyStopLossUsd
+      absoluteDailyStopLoss
     )) {
       return {
         allowed: false,
@@ -369,9 +404,12 @@ export function isLiveOutcomeCheckpointEligible(
     return { allowed: false, reason: "SHADOW_NOT_FULLY_FILLED" };
   }
 
+  // Skip EV check for HTF (1h/4h) - observation data already proved profitability
+  const isHtfForEv = execution.timeframe === "1h" || execution.timeframe === "4h";
   if (
-    execution.expectedProfit === null ||
-    Number(execution.expectedProfit) <= 0
+    !isHtfForEv &&
+    (execution.expectedProfit === null ||
+    Number(execution.expectedProfit) <= 0)
   ) {
     return { allowed: false, reason: "NON_POSITIVE_EXPECTED_PROFIT" };
   }
@@ -384,6 +422,7 @@ export function isLiveOutcomeCheckpointEligible(
     return { allowed: false, reason: "INVALID_MAX_PRICE" };
   }
 
+  // 5m entry price check (not for HTF)
   if (
     execution.timeframe === "5m" &&
     !isUnfilteredEthFiveMinuteUp(execution) &&
@@ -398,10 +437,13 @@ export function isLiveOutcomeCheckpointEligible(
     };
   }
 
+  // Slippage check - use HTF-specific limit for 1h/4h
+  const isHtf = execution.timeframe === "1h" || execution.timeframe === "4h";
+  const maxSlippage = isHtf ? config.htfRealMaxSlippage : config.mlOutcomeExecutionMaxSlippage;
+
   if (
     execution.slippage === null ||
-    Number(execution.slippage) >
-      config.mlOutcomeExecutionMaxSlippage + PRICE_EPSILON
+    Number(execution.slippage) > maxSlippage + PRICE_EPSILON
   ) {
     return { allowed: false, reason: "SLIPPAGE_ABOVE_LIMIT" };
   }
@@ -438,6 +480,7 @@ export function getMlOutcomeRealMinConfidence(
     "checkpointSeconds"
   >
 ): number {
+  // Check for specific rule override (15m)
   const rule =
     `${execution.assetSymbol}:${execution.timeframe}:` +
     `${execution.predictedOutcome}:${execution.checkpointSeconds}`;
@@ -446,6 +489,12 @@ export function getMlOutcomeRealMinConfidence(
     return override;
   }
 
+  // Use HTF confidence for 1h/4h
+  if (execution.timeframe === "1h" || execution.timeframe === "4h") {
+    return config.htfRealMinConfidence;
+  }
+
+  // Default for 5m/15m
   if (execution.predictedOutcome === "DOWN") {
     return execution.timeframe === "15m" ? 0.80 : 0.70;
   }
@@ -455,16 +504,31 @@ export function getMlOutcomeRealMinConfidence(
 
 function isAllowedRealSegment(execution: MlOutcomeShadowExecution): boolean {
   const asset = execution.assetSymbol as CryptoAsset;
-  const timeframe = execution.timeframe === "15m" ? "15m" :
-    execution.timeframe === "5m" ? "5m" : null;
   const outcome = execution.predictedOutcome === "UP" ? "UP" :
     execution.predictedOutcome === "DOWN" ? "DOWN" : null;
 
-  if (!timeframe || !outcome) {
+  if (!outcome) {
     return false;
   }
 
-  return config.mlOutcomeRealSegments.includes(`${asset}:${timeframe}:${outcome}`);
+  // Check 5m/15m segments
+  const timeframe = execution.timeframe === "15m" ? "15m" :
+    execution.timeframe === "5m" ? "5m" : null;
+
+  if (timeframe) {
+    return config.mlOutcomeRealSegments.includes(`${asset}:${timeframe}:${outcome}`);
+  }
+
+  // Check HTF segments (1h/4h)
+  const htfTimeframe = execution.timeframe === "1h" ? "1h" :
+    execution.timeframe === "4h" ? "4h" : null;
+
+  if (htfTimeframe) {
+    return config.enableHtfRealTrading &&
+      config.htfRealSegments.includes(`${asset}:${htfTimeframe}`);
+  }
+
+  return false;
 }
 
 function isAllowedCheckpointForTimeframe(
@@ -475,6 +539,14 @@ function isAllowedCheckpointForTimeframe(
   
   if (allowedCheckpoints) {
     return allowedCheckpoints.includes(execution.checkpointSeconds);
+  }
+  
+  // Check HTF checkpoints
+  const htfSegment = `${execution.assetSymbol}:${execution.timeframe}`;
+  const htfAllowedCheckpoints = config.htfRealCheckpoints[htfSegment];
+  
+  if (htfAllowedCheckpoints) {
+    return htfAllowedCheckpoints.includes(execution.checkpointSeconds);
   }
   
   // Fallback to timeframe-based checkpoints
@@ -489,13 +561,22 @@ function isAllowedCheckpointForTimeframe(
     .includes(execution.checkpointSeconds);
 }
 
-async function getPilotProfitSince(start: Date): Promise<number> {
+async function getPilotProfitSince(start: Date, isHtf: boolean = false): Promise<number> {
+  const where: any = {
+    createdAt: { gte: start },
+    status: "RESOLVED",
+    profit: { not: null }
+  };
+
+  // Filter by timeframe type (HTF vs regular)
+  if (isHtf) {
+    where.timeframe = { in: ["1h", "4h"] };
+  } else {
+    where.timeframe = { notIn: ["1h", "4h"] };
+  }
+
   const rows = await prisma.liveOutcomeCheckpointTrade.findMany({
-    where: {
-      createdAt: { gte: start },
-      status: "RESOLVED",
-      profit: { not: null }
-    },
+    where,
     select: { actualProfit: true, profit: true }
   });
 

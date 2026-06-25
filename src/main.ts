@@ -217,7 +217,7 @@ async function bootstrap(): Promise<void> {
   }
 
   async function runHigherTimeframeObservationLoop(): Promise<void> {
-    if (isShuttingDown || !config.enableHigherTimeframeOutcomeObservation) {
+    if (isShuttingDown || (!config.enableHigherTimeframeOutcomeObservation && !config.enableHtfRealTrading)) {
       return;
     }
 
@@ -293,7 +293,7 @@ async function bootstrap(): Promise<void> {
     mode: "OBSERVATION_ONLY"
   });
   logger.info("Observacion UP/DOWN de timeframes superiores", {
-    enabled: config.enableHigherTimeframeOutcomeObservation,
+    enabled: config.enableHigherTimeframeOutcomeObservation || config.enableHtfRealTrading,
     timeframes: ["1h", "4h"],
     checkpointsSeconds: {
       "1h": [720, 480, 240, 120],
@@ -304,8 +304,13 @@ async function bootstrap(): Promise<void> {
       "OUTCOME_UP_DOWN_LOGREG_V1_1H",
       "OUTCOME_UP_DOWN_LOGREG_V1_4H"
     ],
-    mode: "OBSERVATION_ONLY",
-    realTrading: false
+    mode: config.enableHtfRealTrading ? "REAL_TRADING" : "OBSERVATION_ONLY",
+    realTrading: config.enableHtfRealTrading,
+    htfSegments: config.enableHtfRealTrading ? config.htfRealSegments : [],
+    htfCheckpoints: config.enableHtfRealTrading ? config.htfRealCheckpoints : {},
+    htfStakeUsd: config.htfRealStakeUsd,
+    htfMinConfidence: config.htfRealMinConfidence,
+    htfMaxSlippage: config.htfRealMaxSlippage
   });
   logger.info("Variantes filtradas de compra/venta", {
     enabled: config.enableShortExitObservation,
@@ -416,7 +421,7 @@ async function bootstrap(): Promise<void> {
     });
   }
   void runOutcomeCheckpointLoop();
-  if (config.enableHigherTimeframeOutcomeObservation) {
+  if (config.enableHigherTimeframeOutcomeObservation || config.enableHtfRealTrading) {
     void runHigherTimeframeObservationLoop();
   }
 }

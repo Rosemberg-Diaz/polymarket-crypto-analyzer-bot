@@ -54,11 +54,11 @@ function execution(
 }
 
 describe("live outcome checkpoint pilot gate", () => {
-  it("blocks BTC 5m UP after the real-pilot segment review", () => {
+  it("blocks all 5m segments (deactivated)", () => {
     expect(isLiveOutcomeCheckpointEligible(execution()).allowed).toBe(false);
   });
 
-  it("allows ETH 5m UP but blocks ETH 5m DOWN", () => {
+  it("blocks ETH 5m UP and ETH 5m DOWN (5m deactivated)", () => {
     expect(
       isLiveOutcomeCheckpointEligible(
         execution({
@@ -67,8 +67,8 @@ describe("live outcome checkpoint pilot gate", () => {
           predictedOutcome: "UP",
           checkpointSeconds: 30
         })
-      )
-    ).toEqual({ allowed: true });
+      ).allowed
+    ).toBe(false);
 
     expect(
       isLiveOutcomeCheckpointEligible(
@@ -89,7 +89,7 @@ describe("live outcome checkpoint pilot gate", () => {
     expect(result.allowed).toBe(false);
   });
 
-  it("allows profitable whitelisted 5m UP/DOWN markets at 30s", () => {
+  it("blocks all 5m UP/DOWN markets (5m deactivated)", () => {
     for (const segment of [
       { assetSymbol: "ETH", predictedOutcome: "UP" },
       { assetSymbol: "SOL", predictedOutcome: "UP" },
@@ -103,11 +103,11 @@ describe("live outcome checkpoint pilot gate", () => {
           checkpointSeconds: 30
         })
       );
-      expect(result).toEqual({ allowed: true });
+      expect(result.allowed).toBe(false);
     }
   });
 
-  it("allows filtered XRP 5m DOWN back into the real pilot", () => {
+  it("blocks XRP 5m DOWN (5m deactivated)", () => {
     const result = isLiveOutcomeCheckpointEligible(
       execution({
         assetSymbol: "XRP",
@@ -117,7 +117,7 @@ describe("live outcome checkpoint pilot gate", () => {
       })
     );
 
-    expect(result).toEqual({ allowed: true });
+    expect(result.allowed).toBe(false);
   });
 
   it("blocks 5m markets at checkpoints other than 30s", () => {
@@ -129,10 +129,7 @@ describe("live outcome checkpoint pilot gate", () => {
         checkpointSeconds: 120
       })
     );
-    expect(result).toEqual({
-      allowed: false,
-      reason: "CHECKPOINT_NOT_ALLOWED_FOR_TIMEFRAME:5m:120"
-    });
+    expect(result.allowed).toBe(false);
   });
 
   it("blocks non-whitelisted BTC 5m DOWN markets", () => {
@@ -144,12 +141,14 @@ describe("live outcome checkpoint pilot gate", () => {
 
   it("allows only profitable 15m segment checkpoints from the real-pilot review", () => {
     const testCases = [
-      { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 120 },
-      { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 60 },
-      { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 60 },
+      { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 180 },
+      { assetSymbol: "BTC", predictedOutcome: "UP", checkpointSeconds: 120 },
       { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 120 },
+      { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 180 },
       { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 60 },
-      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 180 }
+      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 120 },
+      { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 180 },
+      { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 120 }
     ];
     for (const tc of testCases) {
       const result = isLiveOutcomeCheckpointEligible(
@@ -164,29 +163,18 @@ describe("live outcome checkpoint pilot gate", () => {
     }
   });
 
-  it("keeps unprofitable BTC 15m DOWN at 180s in observation only", () => {
-    const result = isLiveOutcomeCheckpointEligible(
-      execution({
-        assetSymbol: "BTC",
-        timeframe: "15m",
-        predictedOutcome: "DOWN",
-        checkpointSeconds: 180
-      })
-    );
-
-    expect(result).toEqual({
-      allowed: false,
-      reason: "CHECKPOINT_NOT_ALLOWED_FOR_TIMEFRAME:15m:180"
-    });
-  });
-
   it("blocks 15m segments at non-allowed checkpoints", () => {
     const blockedCases = [
-      { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 180 },
+      { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 120 },
+      { assetSymbol: "BTC", predictedOutcome: "DOWN", checkpointSeconds: 60 },
+      { assetSymbol: "BTC", predictedOutcome: "UP", checkpointSeconds: 180 },
+      { assetSymbol: "BTC", predictedOutcome: "UP", checkpointSeconds: 60 },
+      { assetSymbol: "ETH", predictedOutcome: "DOWN", checkpointSeconds: 60 },
       { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 120 },
       { assetSymbol: "ETH", predictedOutcome: "UP", checkpointSeconds: 180 },
       { assetSymbol: "SOL", predictedOutcome: "UP", checkpointSeconds: 60 },
-      { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 120 }
+      { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 180 },
+      { assetSymbol: "XRP", predictedOutcome: "DOWN", checkpointSeconds: 60 }
     ];
     for (const tc of blockedCases) {
       const result = isLiveOutcomeCheckpointEligible(
@@ -203,14 +191,20 @@ describe("live outcome checkpoint pilot gate", () => {
 
   it("blocks assets outside the segment pilot", () => {
     const result = isLiveOutcomeCheckpointEligible(
-      execution({ assetSymbol: "DOGE", timeframe: "5m", predictedOutcome: "UP" })
+      execution({ assetSymbol: "DOGE", timeframe: "15m", predictedOutcome: "UP" })
     );
     expect(result.allowed).toBe(false);
   });
 
-  it("blocks non-positive expected value", () => {
+  it("blocks non-positive expected value for 15m", () => {
     const result = isLiveOutcomeCheckpointEligible(
-      execution({ expectedProfit: new Prisma.Decimal(0) })
+      execution({
+        assetSymbol: "BTC",
+        timeframe: "15m",
+        predictedOutcome: "DOWN",
+        checkpointSeconds: 180,
+        expectedProfit: new Prisma.Decimal(0)
+      })
     );
     expect(result.allowed).toBe(false);
   });
@@ -219,6 +213,9 @@ describe("live outcome checkpoint pilot gate", () => {
     const result = isLiveOutcomeCheckpointEligible(
       execution({
         assetSymbol: "ETH",
+        timeframe: "15m",
+        predictedOutcome: "DOWN",
+        checkpointSeconds: 120,
         slippage: new Prisma.Decimal("0.010000000000000009")
       })
     );
@@ -237,43 +234,38 @@ describe("live outcome checkpoint pilot gate", () => {
         })
       );
 
-      expect(result).toEqual({
-        allowed: false,
-        reason: `5M_ENTRY_PRICE_TOO_HIGH:${Number(price).toFixed(4)} >= 0.80`
-      });
+      expect(result.allowed).toBe(false);
     }
   });
 
   it("allows a 5m entry below 0.80", () => {
-    expect(
-      isLiveOutcomeCheckpointEligible(
-        execution({
-          assetSymbol: "ETH",
-          timeframe: "5m",
-          predictedOutcome: "UP",
-          worstFillPrice: new Prisma.Decimal("0.79")
-        })
-      )
-    ).toEqual({ allowed: true });
+    const result = isLiveOutcomeCheckpointEligible(
+      execution({
+        assetSymbol: "ETH",
+        timeframe: "5m",
+        predictedOutcome: "UP",
+        worstFillPrice: new Prisma.Decimal("0.79")
+      })
+    );
+    expect(result.allowed).toBe(false);
   });
 
-  it("keeps ETH 5m UP exempt from the new confidence and price filter", () => {
-    expect(
-      isLiveOutcomeCheckpointEligible(
-        execution({
-          assetSymbol: "ETH",
-          timeframe: "5m",
-          predictedOutcome: "UP",
-          worstFillPrice: new Prisma.Decimal("0.84")
-        })
-      )
-    ).toEqual({ allowed: true });
+  it("blocks ETH 5m UP (5m deactivated, no special exemption)", () => {
+    const result = isLiveOutcomeCheckpointEligible(
+      execution({
+        assetSymbol: "ETH",
+        timeframe: "5m",
+        predictedOutcome: "UP",
+        worstFillPrice: new Prisma.Decimal("0.84")
+      })
+    );
+    expect(result.allowed).toBe(false);
     expect(getMlOutcomeRealMinConfidence(execution({
       assetSymbol: "ETH",
       timeframe: "5m",
       predictedOutcome: "UP",
       checkpointSeconds: 30
-    }))).toBe(0);
+    }))).toBe(0.70);
   });
 });
 
@@ -289,13 +281,13 @@ describe("live outcome checkpoint daily stop", () => {
 describe("live outcome checkpoint confidence thresholds", () => {
   it("uses rule-specific thresholds for reviewed live rules", () => {
     expect(getMlOutcomeRealMinConfidence(execution({
-      assetSymbol: "SOL",
-      timeframe: "5m",
-      predictedOutcome: "UP",
-      checkpointSeconds: 30
-    }))).toBe(0.75);
-    expect(getMlOutcomeRealMinConfidence(execution({
       assetSymbol: "BTC",
+      timeframe: "15m",
+      predictedOutcome: "DOWN",
+      checkpointSeconds: 180
+    }))).toBe(0.85);
+    expect(getMlOutcomeRealMinConfidence(execution({
+      assetSymbol: "ETH",
       timeframe: "15m",
       predictedOutcome: "DOWN",
       checkpointSeconds: 120
@@ -319,7 +311,7 @@ describe("live outcome checkpoint confidence thresholds", () => {
       timeframe: "15m",
       predictedOutcome: "UP",
       checkpointSeconds: 60
-    }))).toBe(0.80);
+    }))).toBe(0.85);
   });
 });
 

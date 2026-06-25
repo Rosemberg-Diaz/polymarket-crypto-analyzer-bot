@@ -72,7 +72,33 @@ export const DEFAULTS = {
   mlOutcomeRealDailyStopLossUsd: 9,
   mlOutcomeRealAbsoluteDailyStopLossUsd: 12,
   mlOutcomeRealStopLossBaselineAt: null as string | null,
-  mlMinResolvedTrades: 1000
+  mlMinResolvedTrades: 1000,
+
+  // HTF (1h/4h) Real Trading Config
+  enableHtfRealTrading: false,
+  htfRealSegments: [
+    "ETH:1h", "ETH:4h",
+    "XRP:1h", "XRP:4h",
+    "DOGE:1h",
+    "BTC:1h", "BTC:4h",
+    "SOL:4h"
+  ],
+  htfRealCheckpoints: {
+    "ETH:1h": [240],
+    "ETH:4h": [1920, 2880],
+    "XRP:1h": [480],
+    "XRP:4h": [960],
+    "DOGE:1h": [240],
+    "BTC:1h": [480],
+    "BTC:4h": [480, 960, 1920],
+    "SOL:4h": [2880]
+  } as Record<string, number[]>,
+  htfRealMinConfidence: 0.85,
+  htfRealStakeUsd: 1.5,
+  htfRealMaxOpenTrades: 2,
+  htfRealDailyStopLossUsd: 6,
+  htfRealAbsoluteDailyStopLossUsd: 10,
+  htfRealMaxSlippage: 0.015
 } as const;
 
 export const MIN_VALUES = {

@@ -50,7 +50,7 @@ export class HigherTimeframeOutcomeObservationJob {
   }
 
   async runOnce(): Promise<void> {
-    if (!config.enableHigherTimeframeOutcomeObservation) {
+    if (!config.enableHigherTimeframeOutcomeObservation && !config.enableHtfRealTrading) {
       return;
     }
 
@@ -93,7 +93,7 @@ export class HigherTimeframeOutcomeObservationJob {
       oneHour: oneHour.length,
       fourHour: fourHour.length,
       total: markets.length,
-      mode: "OBSERVATION_ONLY"
+      mode: config.enableHtfRealTrading ? "REAL_TRADING" : "OBSERVATION_ONLY"
     });
     return markets;
   }
@@ -372,8 +372,8 @@ export class HigherTimeframeOutcomeObservationJob {
       entryPrice,
       edge,
       modelVersion,
-      mode: "OBSERVATION_ONLY",
-      realTradingAllowed: false
+      mode: config.enableHtfRealTrading ? "REAL_TRADING" : "OBSERVATION_ONLY",
+      realTradingAllowed: config.enableHtfRealTrading
     };
     const prediction = await prisma.botPrediction.create({
       data: {
@@ -409,9 +409,14 @@ export class HigherTimeframeOutcomeObservationJob {
       prediction.id,
       marketId,
       `HTF_OUTCOME_${market.timeframe.toUpperCase()}_${checkpointSeconds}S`,
-      config.simulatedStakeUsd,
+      config.enableHtfRealTrading ? config.htfRealStakeUsd : config.simulatedStakeUsd,
       entryPrice
     );
+
+    // Calculate slippage for HTF (estimate based on spread)
+    const spread = bookSpread(selectedBook) ?? 0;
+    const slippage = spread / 2; // Approximate slippage as half of spread
+
     const shadow = await this.shadowExecutionService.createForPrediction({
       predictionId: prediction.id,
       marketId,
@@ -439,7 +444,7 @@ export class HigherTimeframeOutcomeObservationJob {
       estimatedProbability: probabilityForPrediction,
       edge,
       shadowStatus: shadow?.status ?? null,
-      mode: "OBSERVATION_ONLY"
+      mode: config.enableHtfRealTrading ? "REAL_TRADING" : "OBSERVATION_ONLY"
     });
   }
 

@@ -6,6 +6,7 @@ import {
 } from "../../config/assets";
 import { LearningService } from "../learning/learning.service";
 import { CryptoUpDownShortTermStrategy } from "./strategies/crypto-up-down-short-term.strategy";
+import { MomentumTimeBasedStrategy } from "./strategies/momentum-time-based.strategy";
 import { Confidence, Recommendation, SignalInput, SignalResult } from "./signal.types";
 
 const REAL_GATE_MIN_SIMILAR_CASES = 5;
@@ -19,6 +20,7 @@ type HistoricalPerformanceForGate = Awaited<ReturnType<LearningService["findSimi
 
 export class SignalEngine {
   private readonly upDownShortTermStrategy = new CryptoUpDownShortTermStrategy();
+  private readonly momentumTimeBasedStrategy = new MomentumTimeBasedStrategy();
 
   constructor(private readonly learningService = new LearningService()) {}
 
@@ -31,7 +33,11 @@ export class SignalEngine {
     let baseSignal: SignalResult;
 
     if (input.marketType === "UP_DOWN_SHORT_TERM") {
-      baseSignal = this.upDownShortTermStrategy.evaluate(input);
+      if (input.timeframe === "5m") {
+        baseSignal = this.momentumTimeBasedStrategy.evaluate(input);
+      } else {
+        baseSignal = this.upDownShortTermStrategy.evaluate(input);
+      }
     } else {
       baseSignal = createAvoidSignal(
         "signal-engine-router",

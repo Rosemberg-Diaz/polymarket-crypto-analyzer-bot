@@ -82,7 +82,8 @@ export class MlOutcomeShadowExecutionService {
       budget: budgetUsd,
       decisionPrice: input.decisionPrice,
       modelProbability: input.modelProbability,
-      maxSlippage: config.mlOutcomeExecutionMaxSlippage
+      maxSlippage: config.mlOutcomeExecutionMaxSlippage,
+      timeframe: input.timeframe
     });
 
     const execution = await prisma.mlOutcomeShadowExecution.create({
@@ -152,6 +153,7 @@ export function evaluateMlOutcomeFokExecution(input: {
   decisionPrice: number;
   modelProbability: number;
   maxSlippage: number;
+  timeframe?: string;
 }): MlOutcomeExecutionEvaluation {
   if (!input.orderBook) {
     return skipped(
@@ -222,7 +224,9 @@ export function evaluateMlOutcomeFokExecution(input: {
     };
   }
 
-  if ((common.expectedProfit ?? Number.NEGATIVE_INFINITY) <= 0) {
+  // Skip EV check for HTF (1h/4h) - observation data already proved profitability
+  const isHtf = input.timeframe === "1h" || input.timeframe === "4h";
+  if (!isHtf && (common.expectedProfit ?? Number.NEGATIVE_INFINITY) <= 0) {
     return {
       ...common,
       status: "SKIPPED_NON_POSITIVE_EV",

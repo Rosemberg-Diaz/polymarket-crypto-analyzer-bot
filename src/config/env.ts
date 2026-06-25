@@ -57,6 +57,18 @@ export interface AppConfig {
   mlOutcomeRealAbsoluteDailyStopLossUsd: number;
   mlOutcomeRealStopLossBaselineAt: Date | null;
   mlMinResolvedTrades: number;
+
+  // HTF (1h/4h) Real Trading Config
+  enableHtfRealTrading: boolean;
+  htfRealSegments: string[];
+  htfRealCheckpoints: Record<string, number[]>;
+  htfRealMinConfidence: number;
+  htfRealStakeUsd: number;
+  htfRealMaxOpenTrades: number;
+  htfRealDailyStopLossUsd: number;
+  htfRealAbsoluteDailyStopLossUsd: number;
+  htfRealMaxSlippage: number;
+
   polygonPrivateKey: string | null;
   addressWallet: string | null;
   apiKey: string | null;
@@ -156,6 +168,26 @@ function parseMlOutcomeRealSegments(
   return segments.length > 0
     ? Array.from(new Set(segments))
     : [...DEFAULTS.mlOutcomeRealSegments];
+}
+
+function parseHtfRealSegments(value: string | undefined): string[] {
+  const rawSegments = value?.trim()
+    ? value
+    : DEFAULTS.htfRealSegments.join(",");
+
+  const segments = rawSegments
+    .split(",")
+    .map((segment) => segment.trim().toUpperCase())
+    .filter((segment) => {
+      const [asset, timeframe] = segment.split(":");
+      const isAsset = SUPPORTED_CRYPTO_ASSETS.includes(asset as CryptoAsset);
+      const isTimeframe = timeframe === "1H" || timeframe === "4H";
+      return isAsset && isTimeframe;
+    });
+
+  return segments.length > 0
+    ? Array.from(new Set(segments))
+    : [...DEFAULTS.htfRealSegments];
 }
 
 function validateAppMode(appMode: string, enableRealTrading: boolean): void {
@@ -424,6 +456,48 @@ export const config: AppConfig = {
     DEFAULTS.mlMinResolvedTrades,
     MIN_VALUES.mlMinResolvedTrades
   ),
+
+  // HTF (1h/4h) Real Trading Config
+  enableHtfRealTrading: parseBoolean(
+    process.env.ENABLE_HTF_REAL_TRADING,
+    DEFAULTS.enableHtfRealTrading
+  ),
+  htfRealSegments: parseHtfRealSegments(process.env.HTF_REAL_SEGMENTS),
+  htfRealCheckpoints: DEFAULTS.htfRealCheckpoints,
+  htfRealMinConfidence: parseNumber(
+    process.env.HTF_REAL_MIN_CONFIDENCE,
+    DEFAULTS.htfRealMinConfidence,
+    0.5
+  ),
+  htfRealStakeUsd: Math.min(
+    3,
+    parseNumber(
+      process.env.HTF_REAL_STAKE_USD,
+      DEFAULTS.htfRealStakeUsd,
+      MIN_VALUES.mlOutcomeRealStakeUsd
+    )
+  ),
+  htfRealMaxOpenTrades: parseNumber(
+    process.env.HTF_REAL_MAX_OPEN_TRADES,
+    DEFAULTS.htfRealMaxOpenTrades,
+    MIN_VALUES.mlOutcomeRealMaxOpenTrades
+  ),
+  htfRealDailyStopLossUsd: parseNumber(
+    process.env.HTF_REAL_DAILY_STOP_LOSS_USD,
+    DEFAULTS.htfRealDailyStopLossUsd,
+    MIN_VALUES.mlOutcomeRealDailyStopLossUsd
+  ),
+  htfRealAbsoluteDailyStopLossUsd: parseNumber(
+    process.env.HTF_REAL_ABSOLUTE_DAILY_STOP_LOSS_USD,
+    DEFAULTS.htfRealAbsoluteDailyStopLossUsd,
+    MIN_VALUES.mlOutcomeRealAbsoluteDailyStopLossUsd
+  ),
+  htfRealMaxSlippage: parseNumber(
+    process.env.HTF_REAL_MAX_SLIPPAGE,
+    DEFAULTS.htfRealMaxSlippage,
+    0.001
+  ),
+
   polygonPrivateKey: process.env.WALLET_PRIVATE_KEY ?? process.env.POLYGON_PRIVATE_KEY ?? null,
   addressWallet: process.env.ADDRESS_WALLET ?? null,
   apiKey: process.env.API_KEY ?? null,
